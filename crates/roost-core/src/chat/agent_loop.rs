@@ -30,7 +30,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-pub const AGENT_PROMPT_ADDITION: &str = "You are operating as an agent inside the attached workspace. Use only the provided tools, read a file before you change it, stay within the workspace, never invent tool results, honor steering messages, and stop when the task is complete or the step budget is exhausted.";
+pub const AGENT_PROMPT_ADDITION: &str = "You are operating as an agent inside the attached workspace. Use only the provided tools, read a file before you change it, stay within the workspace, use fetch_url (not shell commands such as curl) to read web pages when it is offered, never invent tool results, honor steering messages, and stop when the task is complete or the step budget is exhausted.";
 
 #[derive(Clone)]
 struct PendingCall {
