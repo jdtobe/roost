@@ -160,8 +160,12 @@ impl Manager {
         &mut self,
         lifetime: SessionLifetime,
         model: &str,
-        workspace: PathBuf,
+        workspace: Option<PathBuf>,
     ) {
+        let Some(workspace) = workspace else {
+            self.session_error(None, "An agent needs a folder.".into());
+            return;
+        };
         if let Err(e) = Workspace::open(&workspace) {
             self.session_error(None, format!("That folder cannot be used: {e}"));
             return;

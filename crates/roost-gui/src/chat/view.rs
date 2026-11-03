@@ -1891,7 +1891,7 @@ fn new_agent_panel(
                 out.push(BackendRequest::Chat(ChatCommand::CreateAgent {
                     lifetime,
                     model,
-                    workspace: folder,
+                    workspace: Some(folder),
                 }));
                 app.chat_ui.new_agent.open = false;
                 app.chat_ui.focus_composer = true;

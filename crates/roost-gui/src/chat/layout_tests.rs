@@ -858,7 +858,7 @@ fn the_new_agent_form_cannot_start_until_the_model_supports_tools() {
     let cmds = sent_chat_commands(&sent);
     assert!(
         matches!(cmds.as_slice(), [ChatCommand::CreateAgent { lifetime: SessionLifetime::Persisted, model, workspace }]
-            if model == "qwen:7b" && *workspace == std::env::temp_dir()),
+            if model == "qwen:7b" && *workspace == Some(std::env::temp_dir())),
         "{cmds:?}"
     );
     assert!(!app.state_mut().chat_ui.new_agent.open);

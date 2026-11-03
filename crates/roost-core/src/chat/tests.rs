@@ -1195,7 +1195,7 @@ impl H {
         self.cmd(ChatCommand::CreateAgent {
             lifetime,
             model: "llama3:8b".into(),
-            workspace: ws.path().to_path_buf(),
+            workspace: Some(ws.path().to_path_buf()),
         });
         self.wait("agent opened", |e| opened(e).len() > before)
             .await;
@@ -1553,12 +1553,12 @@ async fn an_agent_needs_a_real_workspace_folder() {
     h.cmd(ChatCommand::CreateAgent {
         lifetime: SessionLifetime::Persisted,
         model: "m".into(),
-        workspace: nowhere,
+        workspace: Some(nowhere),
     });
     h.cmd(ChatCommand::CreateAgent {
         lifetime: SessionLifetime::Persisted,
         model: "m".into(),
-        workspace: std::path::PathBuf::from("relative/dir"),
+        workspace: Some(std::path::PathBuf::from("relative/dir")),
     });
     h.wait("two refusals", |e| {
         e.iter()
@@ -3742,5 +3742,238 @@ async fn allowing_a_host_covers_that_host_for_the_chat_and_never_the_whole_web()
     assert_eq!(
         s.effective_tools.capabilities.get("web.fetch"),
         Some(&crate::session::Permission::Ask)
+    );
+}
+
+// ---- an agent without a folder
+
+impl H {
+    async fn create_unattached_agent(&self) -> SessionId {
+        let before = self.opened().len();
+        self.cmd(ChatCommand::CreateAgent {
+            lifetime: SessionLifetime::Persisted,
+            model: "llama3:8b".into(),
+            workspace: None,
+        });
+        self.wait("agent opened", |e| opened(e).len() > before)
+            .await;
+        *self.opened().last().unwrap()
+    }
+}
+
+fn workspace_needed_for(e: &[ChatEvent]) -> Option<(String, String)> {
+    e.iter().rev().find_map(|e| match e {
+        ChatEvent::WorkspaceNeeded { call_id, name, .. } => Some((call_id.clone(), name.clone())),
+        _ => None,
+    })
+}
+
+fn count_workspace_needed(e: &[ChatEvent]) -> usize {
+    e.iter()
+        .filter(|e| matches!(e, ChatEvent::WorkspaceNeeded { .. }))
+        .count()
+}
+
+/// The saved tool message of `name`, once there is one: (status, output).
+fn saved_tool(h: &H, id: SessionId, name: &str) -> Option<(crate::session::ToolStatus, String)> {
+    h.try_read(id)?
+        .messages
+        .iter()
+        .find_map(|m| match &m.content {
+            MessageContent::Tool {
+                name: n,
+                status,
+                output,
+                ..
+            } if n == name => Some((*status, output.clone().unwrap_or_default())),
+            _ => None,
+        })
+}
+
+/// An agent with no folder whose first model step asks to read `a.txt`.
+async fn unattached_agent(routes: Vec<Route>) -> (TcpScript, H, SessionId) {
+    let srv = fake_agent(routes).await;
+    let h = start(&srv).await;
+    let id = h.create_unattached_agent().await;
+    (srv, h, id)
+}
+
+#[tokio::test]
+async fn an_agent_can_be_created_without_a_folder() {
+    let (_srv, h, id) = unattached_agent(vec![]).await;
+    h.wait("saved", |_| h.try_read(id).is_some()).await;
+    let s = h.try_read(id).unwrap();
+    assert_eq!(s.mode, crate::session::SessionMode::Agent);
+    assert_eq!(s.workspace, None);
+}
+
+#[tokio::test]
+async fn a_file_call_without_a_folder_waits_and_runs_once_one_is_chosen() {
+    let ws = workspace();
+    let (_srv, h, id) = unattached_agent(vec![
+        chat_route(calls("read_file", serde_json::json!({"path": "a.txt"}))),
+        chat_route(reply("It says hello.")),
+    ])
+    .await;
+    h.send(id, "what is in a.txt?").await;
+    h.wait("folder needed", |e| workspace_needed_for(e).is_some())
+        .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        started_tools(&h.events()),
+        0,
+        "nothing runs without a folder"
+    );
+    assert!(run_ends(&h.events()).is_empty(), "the run is waiting");
+    let (call_id, name) = workspace_needed_for(&h.events()).unwrap();
+    assert_eq!(name, "read_file");
+    h.cmd(ChatCommand::ProvideWorkspace {
+        session: id,
+        call_id,
+        path: Some(ws.path().to_path_buf()),
+    });
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        run_ends(&h.events()),
+        vec![(super::types::RunOutcome::Completed, None)]
+    );
+    assert_eq!(started_tools(&h.events()), 1);
+    h.wait("saved", |_| {
+        h.try_read(id)
+            .is_some_and(|s| s.workspace.as_deref() == Some(ws.path()))
+    })
+    .await;
+    let (status, output) = saved_tool(&h, id, "read_file").unwrap();
+    assert_eq!(status, crate::session::ToolStatus::Complete);
+    assert!(output.contains("hello"), "{output}");
+}
+
+#[tokio::test]
+async fn skipping_the_folder_fails_the_call_and_the_run_goes_on() {
+    let (_srv, h, id) = unattached_agent(vec![
+        chat_route(calls("read_file", serde_json::json!({"path": "a.txt"}))),
+        chat_route(reply("I cannot read files here.")),
+    ])
+    .await;
+    h.send(id, "what is in a.txt?").await;
+    h.wait("folder needed", |e| workspace_needed_for(e).is_some())
+        .await;
+    let (call_id, _) = workspace_needed_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ProvideWorkspace {
+        session: id,
+        call_id,
+        path: None,
+    });
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        run_ends(&h.events()),
+        vec![(super::types::RunOutcome::Completed, None)]
+    );
+    assert_eq!(started_tools(&h.events()), 0);
+    h.wait("saved", |_| saved_tool(&h, id, "read_file").is_some())
+        .await;
+    let (status, output) = saved_tool(&h, id, "read_file").unwrap();
+    assert_eq!(status, crate::session::ToolStatus::Failed);
+    assert!(output.contains("No working directory"), "{output}");
+    assert_eq!(h.try_read(id).unwrap().workspace, None);
+}
+
+#[tokio::test]
+async fn a_folder_that_cannot_be_used_leaves_the_call_waiting() {
+    let ws = workspace();
+    let (_srv, h, id) = unattached_agent(vec![
+        chat_route(calls("read_file", serde_json::json!({"path": "a.txt"}))),
+        chat_route(reply("It says hello.")),
+    ])
+    .await;
+    h.send(id, "what is in a.txt?").await;
+    h.wait("folder needed", |e| workspace_needed_for(e).is_some())
+        .await;
+    let (call_id, _) = workspace_needed_for(&h.events()).unwrap();
+    let nowhere = TempDir::new().unwrap().path().join("missing");
+    h.cmd(ChatCommand::ProvideWorkspace {
+        session: id,
+        call_id: call_id.clone(),
+        path: Some(nowhere),
+    });
+    h.wait("refused", |e| {
+        e.iter()
+            .any(|e| matches!(e, ChatEvent::SessionError { session: Some(s), .. } if *s == id))
+    })
+    .await;
+    assert!(run_ends(&h.events()).is_empty(), "still waiting");
+    h.cmd(ChatCommand::ProvideWorkspace {
+        session: id,
+        call_id,
+        path: Some(ws.path().to_path_buf()),
+    });
+    h.wait_run_ended(1).await;
+    assert_eq!(started_tools(&h.events()), 1);
+}
+
+#[tokio::test]
+async fn a_switched_off_file_tool_fails_without_asking_for_a_folder() {
+    let (_srv, h, id) = unattached_agent(vec![
+        chat_route(calls("read_file", serde_json::json!({"path": "a.txt"}))),
+        chat_route(reply("Reading is off.")),
+    ])
+    .await;
+    h.cmd(ChatCommand::SetCapability(
+        id,
+        "files.read".into(),
+        crate::session::Permission::Off,
+    ));
+    h.wait("capability set", |_| {
+        h.try_read(id).is_some_and(|s| {
+            s.effective_tools.capabilities.get("files.read")
+                == Some(&crate::session::Permission::Off)
+        })
+    })
+    .await;
+    h.send(id, "what is in a.txt?").await;
+    h.wait_run_ended(1).await;
+    assert_eq!(count_workspace_needed(&h.events()), 0);
+}
+
+#[tokio::test]
+async fn reopening_an_agent_that_waits_for_a_folder_asks_again() {
+    let ws = workspace();
+    let (_srv, h, id) = unattached_agent(vec![
+        chat_route(calls("read_file", serde_json::json!({"path": "a.txt"}))),
+        chat_route(reply("It says hello.")),
+    ])
+    .await;
+    h.send(id, "what is in a.txt?").await;
+    h.wait("folder needed", |e| workspace_needed_for(e).is_some())
+        .await;
+    h.cmd(ChatCommand::Close(id));
+    h.cmd(ChatCommand::Open(id));
+    h.wait("asked again", |e| count_workspace_needed(e) >= 2)
+        .await;
+    let (call_id, _) = workspace_needed_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ProvideWorkspace {
+        session: id,
+        call_id,
+        path: Some(ws.path().to_path_buf()),
+    });
+    h.wait_run_ended(1).await;
+    assert_eq!(started_tools(&h.events()), 1);
+}
+
+#[tokio::test]
+async fn stopping_an_agent_that_waits_for_a_folder_ends_the_run() {
+    let (_srv, h, id) = unattached_agent(vec![chat_route(calls(
+        "read_file",
+        serde_json::json!({"path": "a.txt"}),
+    ))])
+    .await;
+    h.send(id, "what is in a.txt?").await;
+    h.wait("folder needed", |e| workspace_needed_for(e).is_some())
+        .await;
+    h.cmd(ChatCommand::Stop(id));
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        run_ends(&h.events()),
+        vec![(super::types::RunOutcome::Cancelled, None)]
     );
 }

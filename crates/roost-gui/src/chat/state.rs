@@ -399,6 +399,7 @@ impl ChatState {
                 self.questions
                     .insert(session, PendingQuestion { call_id, question });
             }
+            ChatEvent::WorkspaceNeeded { .. } => {}
             ChatEvent::ToolStarted {
                 session, call_id, ..
             } => {

@@ -388,6 +388,7 @@ impl Manager {
             } => self.create_agent(lifetime, &model, workspace).await,
             ChatCommand::CheckModel(model) => self.check_model(model),
             ChatCommand::SetWorkspace(id, path) => self.set_workspace(id, path).await,
+            ChatCommand::ProvideWorkspace { .. } => {}
             ChatCommand::SetWritesAllowed(on) => self.writes_allowed = on,
             ChatCommand::SetRunAllowed(on) => self.commands_allowed = on,
             ChatCommand::SetLimits(l) => self.limits = l.clamped(),
