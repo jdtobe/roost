@@ -3977,3 +3977,37 @@ async fn stopping_an_agent_that_waits_for_a_folder_ends_the_run() {
         vec![(super::types::RunOutcome::Cancelled, None)]
     );
 }
+
+// ---- an agent without a model
+
+#[tokio::test]
+async fn an_agent_without_a_model_cannot_send_until_one_is_chosen() {
+    let srv = fake_agent(vec![chat_route(reply("Hello."))]).await;
+    let h = start(&srv).await;
+    h.cmd(ChatCommand::CreateAgent {
+        lifetime: SessionLifetime::Persisted,
+        model: String::new(),
+        workspace: None,
+    });
+    h.wait("agent opened", |e| !opened(e).is_empty()).await;
+    let id = *h.opened().last().unwrap();
+    h.send(id, "hi").await;
+    h.wait("rejected", |e| {
+        e.iter().any(|e| {
+            matches!(e, ChatEvent::SendRejected { reason: SendRejection::NoModel, session } if *session == id)
+        })
+    })
+    .await;
+    assert!(run_ends(&h.events()).is_empty());
+    h.cmd(ChatCommand::SetModel(id, "llama3:8b".into()));
+    h.wait("model saved", |_| {
+        h.try_read(id).is_some_and(|s| s.model == "llama3:8b")
+    })
+    .await;
+    h.send(id, "hi").await;
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        run_ends(&h.events()),
+        vec![(super::types::RunOutcome::Completed, None)]
+    );
+}

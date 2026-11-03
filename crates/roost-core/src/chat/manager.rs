@@ -919,6 +919,13 @@ impl Manager {
             Intent::Send(_) => {}
         }
         let model = live.s.model.clone();
+        if model.trim().is_empty() {
+            self.emit(ChatEvent::SendRejected {
+                session: id,
+                reason: SendRejection::NoModel,
+            });
+            return;
+        }
         if let Some(info) = self.ctx_cache.get(&model).copied() {
             self.proceed(id, intent, Some(info)).await;
             return;

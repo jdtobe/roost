@@ -378,6 +378,7 @@ impl ChatState {
                     SendRejection::NoWorkspace(why) => {
                         Some(format!("This agent's folder cannot be used: {why}"))
                     }
+                    SendRejection::NoModel => Some("Choose a model first.".into()),
                     SendRejection::Cancelled => None,
                 };
             }

@@ -146,6 +146,8 @@ pub enum SendRejection {
     NoToolSupport(String),
     /// The agent's workspace folder is missing or cannot be opened.
     NoWorkspace(String),
+    /// No model is chosen yet (an agent can be opened before one is picked).
+    NoModel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
