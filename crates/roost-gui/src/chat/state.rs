@@ -184,6 +184,8 @@ pub struct ChatState {
     approvals: HashMap<SessionId, PendingApproval>,
     /// The question each agent is waiting for an answer to.
     questions: HashMap<SessionId, PendingQuestion>,
+    /// The call each agent has paused until a working directory is attached.
+    folders: HashMap<SessionId, PendingFolder>,
     /// What is known about each opened branch's original.
     branch_views: HashMap<SessionId, BranchView>,
     runs: HashMap<SessionId, (TurnId, RunBadge)>,
@@ -406,11 +408,20 @@ impl ChatState {
                 self.questions
                     .insert(session, PendingQuestion { call_id, question });
             }
-            ChatEvent::WorkspaceNeeded { .. } => {}
+            ChatEvent::WorkspaceNeeded {
+                session,
+                call_id,
+                name,
+                ..
+            } => {
+                self.folders
+                    .insert(session, PendingFolder { call_id, name });
+            }
             ChatEvent::ToolStarted {
                 session, call_id, ..
             } => {
                 self.approvals.remove(&session);
+                self.folders.remove(&session);
                 self.update_tool(session, &call_id, None, ToolStatus::Running);
             }
             ChatEvent::ToolFinished {
@@ -421,6 +432,7 @@ impl ChatState {
             } => {
                 self.approvals.remove(&session);
                 self.questions.remove(&session);
+                self.folders.remove(&session);
                 let status = if ok {
                     ToolStatus::Complete
                 } else {
@@ -452,6 +464,7 @@ impl ChatState {
                 self.active.remove(&session);
                 self.approvals.remove(&session);
                 self.questions.remove(&session);
+                self.folders.remove(&session);
                 self.runs.remove(&session);
                 self.steps.remove(&session);
                 self.sending.remove(&session);
@@ -781,7 +794,9 @@ impl ChatState {
             updated_at_ms: r.updated_at_ms,
             empty: r.preview.as_deref().is_some_and(str::is_empty)
                 && r.last.as_deref().is_none_or(str::is_empty),
-            needs_you: self.approvals.contains_key(&r.id) || self.questions.contains_key(&r.id),
+            needs_you: self.approvals.contains_key(&r.id)
+                || self.questions.contains_key(&r.id)
+                || self.folders.contains_key(&r.id),
             children: Vec::new(),
         };
         let mut placed: Vec<(u64, u8, RailRow)> = Vec::new();
@@ -829,8 +844,13 @@ impl ChatState {
     }
 
     /// The call that waits for the user to attach a working directory.
-    pub fn folder_wait(&self, _id: SessionId) -> Option<&PendingFolder> {
-        None
+    pub fn folder_wait(&self, id: SessionId) -> Option<&PendingFolder> {
+        self.folders.get(&id)
+    }
+
+    /// Forgets the wait for a folder once it has been answered.
+    pub fn folder_answered(&mut self, id: SessionId) {
+        self.folders.remove(&id);
     }
 
     /// The question this chat's agent is waiting to have answered.

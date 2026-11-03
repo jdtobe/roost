@@ -1770,6 +1770,60 @@ fn approval_card(
     }
 }
 
+/// A tool needs a working directory and the agent has none: the run waits
+/// here, above the input, until a folder is chosen or the call is skipped.
+fn folder_card(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    s: &Session,
+    wait: &super::state::PendingFolder,
+) {
+    let (mut choose, mut skip) = (false, false);
+    egui::Frame::new()
+        .fill(t.warn_soft)
+        .stroke(Stroke::new(1.0, t.warn))
+        .corner_radius(10.0)
+        .inner_margin(Margin::symmetric(14, 12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.label(RichText::new("No working directory is attached").font(semibold(14.0)));
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!(
+                        "{} needs a folder to work in. Choose one to let the agent continue, or skip and it carries on without files.",
+                        wait.name
+                    ))
+                    .size(12.5)
+                    .color(t.fg2),
+                )
+                .wrap(),
+            );
+            ui.horizontal_wrapped(|ui| {
+                let pick = primary_button(ui, "Choose folder…", true);
+                let skip_r = secondary(ui, "Skip", true);
+                #[cfg(test)]
+                {
+                    app.chat_ui.probe.folder_buttons = vec![pick.rect, skip_r.rect];
+                }
+                choose = pick.clicked();
+                skip = skip_r.clicked();
+            });
+        });
+    if choose {
+        super::chrome::choose_folder(app, out, s.id);
+    } else if skip {
+        app.chat.folder_answered(s.id);
+        out.push(BackendRequest::Chat(ChatCommand::ProvideWorkspace {
+            session: s.id,
+            call_id: wait.call_id.clone(),
+            path: None,
+        }));
+    }
+}
+
 // ---------------------------------------------------------------- agents
 
 /// The form for starting an agent: a folder and a model that can use tools.
@@ -1786,7 +1840,7 @@ fn new_agent_panel(
     ui.add(
         egui::Label::new(
             RichText::new(
-                "The agent can only read inside the folder you choose. It never sees your keys or .env files.",
+                "The agent works only inside the folder you choose, and never sees your keys or .env files. You can choose one later: the agent asks when it needs it.",
             )
             .color(t.fg2),
         )
@@ -1800,7 +1854,9 @@ fn new_agent_panel(
             .new_agent
             .folder
             .as_ref()
-            .map_or("No folder chosen".to_string(), |p| p.display().to_string());
+            .map_or("None yet (optional)".to_string(), |p| {
+                p.display().to_string()
+            });
         ui.add(egui::Label::new(RichText::new(shown).color(t.fg2)).truncate());
     });
     if secondary(ui, "Choose folder…", true).clicked() {
@@ -1874,18 +1930,16 @@ fn new_agent_panel(
     );
     ui.add_space(12.0);
     ui.horizontal(|ui| {
-        let ready = app.chat_ui.new_agent.folder.is_some() && support == Some(true);
+        let ready = support == Some(true);
         let start = primary_button(ui, "Start", ready)
-            .on_disabled_hover_text("Choose a folder and a model that supports tools.");
+            .on_disabled_hover_text("Choose a model that supports tools.");
         #[cfg(test)]
         {
             app.chat_ui.probe.start_agent = Some(start.rect);
         }
         if start.clicked() {
-            if let (Some(folder), Some(model)) = (
-                app.chat_ui.new_agent.folder.clone(),
-                app.chat_ui.new_agent.model.clone(),
-            ) {
+            if let Some(model) = app.chat_ui.new_agent.model.clone() {
+                let folder = app.chat_ui.new_agent.folder.clone();
                 let lifetime = if app.chat_ui.new_agent.incognito {
                     SessionLifetime::Incognito
                 } else {
@@ -1894,7 +1948,7 @@ fn new_agent_panel(
                 out.push(BackendRequest::Chat(ChatCommand::CreateAgent {
                     lifetime,
                     model,
-                    workspace: Some(folder),
+                    workspace: folder,
                 }));
                 app.chat_ui.new_agent.open = false;
                 app.chat_ui.focus_composer = true;
@@ -3071,6 +3125,10 @@ fn composer(
     }
     if let Some(ask) = app.chat.question(id).cloned() {
         question_card(ui, t, app, out, s, &ask);
+        ui.add_space(8.0);
+    }
+    if let Some(wait) = app.chat.folder_wait(id).cloned() {
+        folder_card(ui, t, app, out, s, &wait);
         ui.add_space(8.0);
     }
     super::chrome::run_allow_banner(ui, app, out, t, id);

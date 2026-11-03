@@ -2069,7 +2069,7 @@ fn new_agent_works_while_an_agent_chat_is_open() {
     assert!(app.state_mut().chat_ui.new_agent.open);
     let texts = texts_of(&mut app, &mut h, size);
     assert!(
-        texts.contains("The agent can only read inside the folder"),
+        texts.contains("The agent works only inside the folder"),
         "the form is shown:\n{texts}"
     );
     let cmds = sent_chat_commands(&sent);

@@ -17,6 +17,10 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - The Roost mark and icon, generated from `docs/design/roost-tail.svg`, and a CI scan for stray old names.
 - Serializable chat and agent session types in `roost-core`. Chat and agents themselves are not implemented yet.
 
+### Work without a folder
+
+- A Work session can start with no working directory. When a file or command tool needs one, the run pauses on a card ("No working directory is attached") with Choose folder… and Skip; choosing runs the paused call (through approval as usual), skipping fails it so the model carries on. The folder pill shows "No folder" and does the same. Reopening the chat asks again, and a switched-off tool fails without asking.
+
 ### Chat and history (stage 2)
 
 - A Chat view, now the first tab and the starting view: streaming replies from any installed Ollama model, a history rail (Pinned, Today, Yesterday, Earlier), New chat and New incognito, rename, pin and two-step delete, a model picker, Retry for failed, stopped or interrupted replies, and a Stop button while a reply runs.

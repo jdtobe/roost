@@ -42,6 +42,7 @@ pub fn kind_of(ev: &ChatEvent) -> Option<(SessionId, Kind)> {
     match ev {
         ChatEvent::ApprovalRequested { session, .. } => Some((*session, Kind::Approval)),
         ChatEvent::QuestionAsked { session, .. } => Some((*session, Kind::Question)),
+        ChatEvent::WorkspaceNeeded { session, .. } => Some((*session, Kind::Folder)),
         ChatEvent::RunEnded {
             session, outcome, ..
         } => match outcome {

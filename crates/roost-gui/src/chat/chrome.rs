@@ -792,20 +792,33 @@ pub(super) fn pill(
 /// What choosing `path` means for this chat: the folder a waiting call needs,
 /// or a new working folder for an idle agent.
 pub(super) fn folder_choice(
-    _chat: &super::state::ChatState,
+    chat: &super::state::ChatState,
     id: roost_core::session::SessionId,
     path: std::path::PathBuf,
 ) -> ChatCommand {
-    ChatCommand::SetWorkspace(id, path)
+    match chat.folder_wait(id) {
+        Some(wait) => ChatCommand::ProvideWorkspace {
+            session: id,
+            call_id: wait.call_id.clone(),
+            path: Some(path),
+        },
+        None => ChatCommand::SetWorkspace(id, path),
+    }
 }
 
-/// Asks for a folder and sends it as the agent's working folder.
-fn choose_folder(out: &mut Vec<BackendRequest>, id: roost_core::session::SessionId) {
+/// Asks for a folder and sends it as the agent's working folder, or as the
+/// folder a paused call is waiting for.
+pub(super) fn choose_folder(
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    id: roost_core::session::SessionId,
+) {
     if let Some(path) = rfd::FileDialog::new()
         .set_title("Choose the agent's folder")
         .pick_folder()
     {
-        out.push(BackendRequest::Chat(ChatCommand::SetWorkspace(id, path)));
+        out.push(BackendRequest::Chat(folder_choice(&app.chat, id, path)));
+        app.chat.folder_answered(id);
     }
 }
 
@@ -830,11 +843,12 @@ pub(super) fn plus_menu(
         .show(|ui| {
             ui.set_min_width(200.0);
             if s.mode == SessionMode::Agent {
+                let can_pick = !running || app.chat.folder_wait(s.id).is_some();
                 if ui
-                    .add_enabled(!running, egui::Button::new("Working folder…").frame(false))
+                    .add_enabled(can_pick, egui::Button::new("Working folder…").frame(false))
                     .clicked()
                 {
-                    choose_folder(out, s.id);
+                    choose_folder(app, out, s.id);
                 }
                 ui.label(
                     RichText::new("Files and images: not yet")
@@ -860,11 +874,13 @@ pub(super) fn folder_pill(
     s: &Session,
     compact: bool,
 ) {
-    let Some(path) = &s.workspace else {
-        return;
-    };
-    let running = app.chat.is_running(s.id);
-    let full = home_relative(path);
+    // A paused call can be answered with a folder even while the run waits.
+    let waiting = app.chat.folder_wait(s.id).is_some();
+    let running = app.chat.is_running(s.id) && !waiting;
+    let full = s
+        .workspace
+        .as_ref()
+        .map_or_else(|| "No folder".to_string(), |p| home_relative(p));
     let shown =
         crate::widgets::ellipsize_middle(ui, &full, egui::FontId::proportional(12.0), 220.0);
     let body = if compact {
@@ -877,9 +893,14 @@ pub(super) fn folder_pill(
     {
         app.chat_ui.probe.folder_pill = Some(resp.rect);
     }
-    let resp = resp.on_hover_text(format!("{full}\nClick to choose another folder"));
+    let hint = if s.workspace.is_some() {
+        format!("{full}\nClick to choose another folder")
+    } else {
+        "No working directory is attached\nClick to choose a folder".to_string()
+    };
+    let resp = resp.on_hover_text(hint);
     if resp.clicked() && !running {
-        choose_folder(out, s.id);
+        choose_folder(app, out, s.id);
     }
 }
 
