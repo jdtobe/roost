@@ -18,11 +18,12 @@ pub enum ChatCommand {
     /// View-level for saved sessions; destroys an incognito one.
     Close(SessionId),
     ClearIncognito,
-    /// An agent: a chat with a workspace folder and read-only tools.
+    /// An agent: a chat with tools. The workspace folder can be attached
+    /// later; until then a file tool waits for one (`WorkspaceNeeded`).
     CreateAgent {
         lifetime: SessionLifetime,
         model: String,
-        workspace: PathBuf,
+        workspace: Option<PathBuf>,
     },
     /// Ask whether a model advertises tool support (answered by `ModelCapabilities`).
     CheckModel(String),
@@ -107,6 +108,13 @@ pub enum ChatCommand {
         call_id: String,
         decision: ApprovalDecision,
     },
+    /// The answer to a `WorkspaceNeeded` event: the folder to attach, or
+    /// `None` to go on without one (the call fails).
+    ProvideWorkspace {
+        session: SessionId,
+        call_id: String,
+        path: Option<PathBuf>,
+    },
     /// The answer to a `QuestionAsked` event. `None` is "skip".
     AnswerQuestion {
         session: SessionId,
@@ -138,6 +146,8 @@ pub enum SendRejection {
     NoToolSupport(String),
     /// The agent's workspace folder is missing or cannot be opened.
     NoWorkspace(String),
+    /// No model is chosen yet (an agent can be opened before one is picked).
+    NoModel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,6 +287,14 @@ pub enum ChatEvent {
         preview: Option<crate::agent::change::ChangePreview>,
         /// For a command, exactly what will run and where.
         run: Option<crate::agent::command::RunPreview>,
+    },
+    /// A tool call needs a working directory and the agent has none; the run
+    /// waits for `ProvideWorkspace`.
+    WorkspaceNeeded {
+        session: SessionId,
+        call_id: String,
+        name: String,
+        arguments: serde_json::Value,
     },
     /// The agent asks a question and waits for `AnswerQuestion`.
     QuestionAsked {

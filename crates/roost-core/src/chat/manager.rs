@@ -388,6 +388,11 @@ impl Manager {
             } => self.create_agent(lifetime, &model, workspace).await,
             ChatCommand::CheckModel(model) => self.check_model(model),
             ChatCommand::SetWorkspace(id, path) => self.set_workspace(id, path).await,
+            ChatCommand::ProvideWorkspace {
+                session,
+                call_id,
+                path,
+            } => self.provide_workspace(session, call_id, path).await,
             ChatCommand::SetWritesAllowed(on) => self.writes_allowed = on,
             ChatCommand::SetRunAllowed(on) => self.commands_allowed = on,
             ChatCommand::SetLimits(l) => self.limits = l.clamped(),
@@ -504,6 +509,20 @@ impl Manager {
             }
         }
         if let Some((call_id, name, arguments, preview, run)) = waiting {
+            let folderless = self
+                .sessions
+                .get(&id)
+                .and_then(|l| l.agent.as_ref())
+                .is_some_and(|a| !a.has_workspace());
+            if folderless && crate::agent::registry::needs_workspace(&name) {
+                self.emit(ChatEvent::WorkspaceNeeded {
+                    session: id,
+                    call_id,
+                    name,
+                    arguments,
+                });
+                return;
+            }
             if name == crate::agent::ask::TOOL {
                 if let Ok(question) = crate::agent::ask::parse(&arguments) {
                     self.emit(ChatEvent::QuestionAsked {
@@ -900,6 +919,13 @@ impl Manager {
             Intent::Send(_) => {}
         }
         let model = live.s.model.clone();
+        if model.trim().is_empty() {
+            self.emit(ChatEvent::SendRejected {
+                session: id,
+                reason: SendRejection::NoModel,
+            });
+            return;
+        }
         if let Some(info) = self.ctx_cache.get(&model).copied() {
             self.proceed(id, intent, Some(info)).await;
             return;

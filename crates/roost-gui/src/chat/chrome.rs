@@ -789,13 +789,36 @@ pub(super) fn pill(
     (rect, resp)
 }
 
-/// Asks for a folder and sends it as the agent's working folder.
-fn choose_folder(out: &mut Vec<BackendRequest>, id: roost_core::session::SessionId) {
+/// What choosing `path` means for this chat: the folder a waiting call needs,
+/// or a new working folder for an idle agent.
+pub(super) fn folder_choice(
+    chat: &super::state::ChatState,
+    id: roost_core::session::SessionId,
+    path: std::path::PathBuf,
+) -> ChatCommand {
+    match chat.folder_wait(id) {
+        Some(wait) => ChatCommand::ProvideWorkspace {
+            session: id,
+            call_id: wait.call_id.clone(),
+            path: Some(path),
+        },
+        None => ChatCommand::SetWorkspace(id, path),
+    }
+}
+
+/// Asks for a folder and sends it as the agent's working folder, or as the
+/// folder a paused call is waiting for.
+pub(super) fn choose_folder(
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    id: roost_core::session::SessionId,
+) {
     if let Some(path) = rfd::FileDialog::new()
         .set_title("Choose the agent's folder")
         .pick_folder()
     {
-        out.push(BackendRequest::Chat(ChatCommand::SetWorkspace(id, path)));
+        out.push(BackendRequest::Chat(folder_choice(&app.chat, id, path)));
+        app.chat.folder_answered(id);
     }
 }
 
@@ -820,11 +843,12 @@ pub(super) fn plus_menu(
         .show(|ui| {
             ui.set_min_width(200.0);
             if s.mode == SessionMode::Agent {
+                let can_pick = !running || app.chat.folder_wait(s.id).is_some();
                 if ui
-                    .add_enabled(!running, egui::Button::new("Working folder…").frame(false))
+                    .add_enabled(can_pick, egui::Button::new("Working folder…").frame(false))
                     .clicked()
                 {
-                    choose_folder(out, s.id);
+                    choose_folder(app, out, s.id);
                 }
                 ui.label(
                     RichText::new("Files and images: not yet")
@@ -850,11 +874,13 @@ pub(super) fn folder_pill(
     s: &Session,
     compact: bool,
 ) {
-    let Some(path) = &s.workspace else {
-        return;
-    };
-    let running = app.chat.is_running(s.id);
-    let full = home_relative(path);
+    // A paused call can be answered with a folder even while the run waits.
+    let waiting = app.chat.folder_wait(s.id).is_some();
+    let running = app.chat.is_running(s.id) && !waiting;
+    let full = s
+        .workspace
+        .as_ref()
+        .map_or_else(|| "No folder".to_string(), |p| home_relative(p));
     let shown =
         crate::widgets::ellipsize_middle(ui, &full, egui::FontId::proportional(12.0), 220.0);
     let body = if compact {
@@ -867,9 +893,14 @@ pub(super) fn folder_pill(
     {
         app.chat_ui.probe.folder_pill = Some(resp.rect);
     }
-    let resp = resp.on_hover_text(format!("{full}\nClick to choose another folder"));
+    let hint = if s.workspace.is_some() {
+        format!("{full}\nClick to choose another folder")
+    } else {
+        "No working directory is attached\nClick to choose a folder".to_string()
+    };
+    let resp = resp.on_hover_text(hint);
     if resp.clicked() && !running {
-        choose_folder(out, s.id);
+        choose_folder(app, out, s.id);
     }
 }
 
@@ -1542,25 +1573,55 @@ pub(super) fn model_chip(
         })
         .flatten();
     let dot = if loaded.is_some() { "● " } else { "○ " };
-    let label = format!("{dot}{}", truncate_chars(&model, max_chars));
+    let label = if model.is_empty() {
+        "Choose a model".to_string()
+    } else {
+        format!("{dot}{}", truncate_chars(&model, max_chars))
+    };
     let (chip, _) = MenuButton::new(RichText::new(label).size(12.0))
         .config(sticky())
         .ui(ui, |ui| {
             ui.set_min_width(240.0);
             ui.label(RichText::new("Model").font(semibold(11.0)).color(t.fg3));
             ui.add_enabled_ui(!running, |ui| {
+                let agent = s.mode == SessionMode::Agent;
                 let mut names: Vec<&str> = installed.iter().map(String::as_str).collect();
-                if !names.contains(&model.as_str()) {
+                if !model.is_empty() && !names.contains(&model.as_str()) {
                     names.insert(0, &model);
                 }
-                for name in names {
-                    if ui.selectable_label(name == model, name).clicked() && name != model {
-                        out.push(BackendRequest::Chat(ChatCommand::SetModel(
-                            s.id,
-                            name.into(),
-                        )));
-                        ui.close();
+                if agent {
+                    // An agent needs tools: say which models have them, ask
+                    // about the ones not known yet (once each), and list the
+                    // capable ones first.
+                    for name in &names {
+                        if app.chat.supports_tools(name).is_none()
+                            && app.chat_ui.checked_models.insert((*name).to_string())
+                        {
+                            out.push(BackendRequest::Chat(ChatCommand::CheckModel(
+                                (*name).to_string(),
+                            )));
+                        }
                     }
+                    names.sort_by_key(|n| app.chat.supports_tools(n) != Some(true));
+                }
+                for name in names {
+                    ui.horizontal(|ui| {
+                        if ui.selectable_label(name == model, name).clicked() && name != model {
+                            out.push(BackendRequest::Chat(ChatCommand::SetModel(
+                                s.id,
+                                name.into(),
+                            )));
+                            ui.close();
+                        }
+                        if agent {
+                            let (tag, colour) = match app.chat.supports_tools(name) {
+                                Some(true) => ("tools", t.ok),
+                                Some(false) => ("no tools", t.fg3),
+                                None => ("checking…", t.fg3),
+                            };
+                            ui.label(RichText::new(tag).size(11.0).color(colour));
+                        }
+                    });
                 }
             });
             ui.separator();

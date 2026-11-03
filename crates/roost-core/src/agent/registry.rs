@@ -346,6 +346,15 @@ pub fn needs_approval(config: &EffectiveToolConfig, name: &str) -> bool {
         .is_some_and(|s| matches!(check(config, s), Err(ToolError::NeedsApproval(_))))
 }
 
+/// True when a tool works inside the agent's working directory, so a call
+/// has to wait until one is attached. Questions and web fetches do not.
+pub fn needs_workspace(name: &str) -> bool {
+    specs()
+        .iter()
+        .find(|s| s.name == name)
+        .is_some_and(|s| matches!(s.family, Family::Files | Family::Shell))
+}
+
 /// The settings key of the capability a tool belongs to (for "allow for this
 /// chat").
 pub fn capability_of(name: &str) -> Option<String> {

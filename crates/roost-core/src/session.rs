@@ -437,19 +437,23 @@ impl Session {
         Session::base(SessionMode::Chat, model, lifetime, None, now_ms)
     }
 
-    /// An agent session; the workspace must be absolute and contain no `..`.
+    /// An agent session. A workspace, if given, must be absolute and contain
+    /// no `..`; without one the agent asks for a folder when a tool needs it.
     pub fn new_agent(
         model: &str,
         lifetime: SessionLifetime,
-        workspace: PathBuf,
+        workspace: impl Into<Option<PathBuf>>,
         now_ms: u64,
     ) -> Result<Session, SessionError> {
-        check_workspace(&workspace)?;
+        let workspace = workspace.into();
+        if let Some(path) = &workspace {
+            check_workspace(path)?;
+        }
         Ok(Session::base(
             SessionMode::Agent,
             model,
             lifetime,
-            Some(workspace),
+            workspace,
             now_ms,
         ))
     }
@@ -1127,6 +1131,16 @@ mod tests {
         assert!(s.messages.is_empty());
         assert!(!s.is_branch());
         assert!(s.is_idle());
+    }
+
+    #[test]
+    fn an_agent_can_start_without_a_folder_and_get_one_later() {
+        let mut s =
+            Session::new_agent("m", SessionLifetime::Persisted, None::<PathBuf>, T0).unwrap();
+        assert_eq!(s.mode, SessionMode::Agent);
+        assert_eq!(s.workspace, None);
+        s.set_workspace(abs("ws")).unwrap();
+        assert_eq!(s.workspace, Some(abs("ws")));
     }
 
     #[test]

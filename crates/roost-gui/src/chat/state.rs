@@ -113,6 +113,13 @@ pub struct PendingApproval {
     pub run: Option<roost_core::agent::command::RunPreview>,
 }
 
+/// A tool call that waits for a working directory to be attached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingFolder {
+    pub call_id: String,
+    pub name: String,
+}
+
 /// A question the agent is waiting for the user to answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingQuestion {
@@ -145,6 +152,8 @@ pub enum SendAttempt {
     /// A reply is already running or a send is in flight; the draft is kept.
     Busy,
     Empty,
+    /// No model is chosen for this chat yet; the draft is kept.
+    NoModel,
 }
 
 /// What the rail shows for a chat: its title, or until it has one the start
@@ -177,6 +186,8 @@ pub struct ChatState {
     approvals: HashMap<SessionId, PendingApproval>,
     /// The question each agent is waiting for an answer to.
     questions: HashMap<SessionId, PendingQuestion>,
+    /// The call each agent has paused until a working directory is attached.
+    folders: HashMap<SessionId, PendingFolder>,
     /// What is known about each opened branch's original.
     branch_views: HashMap<SessionId, BranchView>,
     runs: HashMap<SessionId, (TurnId, RunBadge)>,
@@ -369,6 +380,7 @@ impl ChatState {
                     SendRejection::NoWorkspace(why) => {
                         Some(format!("This agent's folder cannot be used: {why}"))
                     }
+                    SendRejection::NoModel => Some("Choose a model first.".into()),
                     SendRejection::Cancelled => None,
                 };
             }
@@ -399,10 +411,20 @@ impl ChatState {
                 self.questions
                     .insert(session, PendingQuestion { call_id, question });
             }
+            ChatEvent::WorkspaceNeeded {
+                session,
+                call_id,
+                name,
+                ..
+            } => {
+                self.folders
+                    .insert(session, PendingFolder { call_id, name });
+            }
             ChatEvent::ToolStarted {
                 session, call_id, ..
             } => {
                 self.approvals.remove(&session);
+                self.folders.remove(&session);
                 self.update_tool(session, &call_id, None, ToolStatus::Running);
             }
             ChatEvent::ToolFinished {
@@ -413,6 +435,7 @@ impl ChatState {
             } => {
                 self.approvals.remove(&session);
                 self.questions.remove(&session);
+                self.folders.remove(&session);
                 let status = if ok {
                     ToolStatus::Complete
                 } else {
@@ -444,6 +467,7 @@ impl ChatState {
                 self.active.remove(&session);
                 self.approvals.remove(&session);
                 self.questions.remove(&session);
+                self.folders.remove(&session);
                 self.runs.remove(&session);
                 self.steps.remove(&session);
                 self.sending.remove(&session);
@@ -582,6 +606,22 @@ impl ChatState {
         self.queued.get(&id).map_or(&[], Vec::as_slice)
     }
 
+    /// The model a chat uses now (empty until one is chosen): the rail's
+    /// answer, which follows a change, else the open session's.
+    pub fn model_of(&self, id: SessionId) -> String {
+        self.rows
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.model.clone())
+            .or_else(|| {
+                self.open
+                    .as_ref()
+                    .filter(|s| s.id == id)
+                    .map(|s| s.model.clone())
+            })
+            .unwrap_or_default()
+    }
+
     /// `Some(true)` once the model is known to support tools.
     pub fn supports_tools(&self, model: &str) -> Option<bool> {
         self.tool_support.get(model).copied()
@@ -657,6 +697,9 @@ impl ChatState {
         let text = self.draft(id).trim().to_string();
         if text.is_empty() {
             return SendAttempt::Empty;
+        }
+        if self.model_of(id).trim().is_empty() {
+            return SendAttempt::NoModel;
         }
         self.sending.insert(id);
         SendAttempt::Sent(ChatCommand::Send { session: id, text })
@@ -773,7 +816,9 @@ impl ChatState {
             updated_at_ms: r.updated_at_ms,
             empty: r.preview.as_deref().is_some_and(str::is_empty)
                 && r.last.as_deref().is_none_or(str::is_empty),
-            needs_you: self.approvals.contains_key(&r.id) || self.questions.contains_key(&r.id),
+            needs_you: self.approvals.contains_key(&r.id)
+                || self.questions.contains_key(&r.id)
+                || self.folders.contains_key(&r.id),
             children: Vec::new(),
         };
         let mut placed: Vec<(u64, u8, RailRow)> = Vec::new();
@@ -818,6 +863,16 @@ impl ChatState {
     /// The tool call this chat's agent is waiting to be allowed to make.
     pub fn approval(&self, id: SessionId) -> Option<&PendingApproval> {
         self.approvals.get(&id)
+    }
+
+    /// The call that waits for the user to attach a working directory.
+    pub fn folder_wait(&self, id: SessionId) -> Option<&PendingFolder> {
+        self.folders.get(&id)
+    }
+
+    /// Forgets the wait for a folder once it has been answered.
+    pub fn folder_answered(&mut self, id: SessionId) {
+        self.folders.remove(&id);
     }
 
     /// The question this chat's agent is waiting to have answered.
@@ -1393,6 +1448,56 @@ mod tests {
             outcome,
             message: message.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn sending_without_a_model_is_refused_and_keeps_the_draft() {
+        let mut st = ChatState::default();
+        let mut s = Session::new_agent(
+            "",
+            SessionLifetime::Persisted,
+            None::<std::path::PathBuf>,
+            1,
+        )
+        .unwrap();
+        s.push_user("earlier", 2);
+        let mut r = roost_core_row(&s);
+        r.mode = SessionMode::Agent;
+        st.fold(ChatEvent::Rows(vec![r]));
+        st.fold(ChatEvent::Opened(Box::new(s.clone())));
+        *st.draft_mut(s.id) = "hello".into();
+        assert!(matches!(st.try_send(s.id), SendAttempt::NoModel));
+        assert_eq!(st.draft(s.id), "hello");
+        // Nothing is in flight, so choosing a model and pressing again works.
+        let mut chosen = s.clone();
+        chosen.model = "m:1".into();
+        let mut r = roost_core_row(&chosen);
+        r.mode = SessionMode::Agent;
+        st.fold(ChatEvent::Rows(vec![r]));
+        assert!(matches!(st.try_send(s.id), SendAttempt::Sent(_)));
+    }
+
+    #[test]
+    fn a_call_that_needs_a_folder_is_remembered_until_it_starts_or_the_run_ends() {
+        let (mut st, s) = agent_state();
+        let needed = || ChatEvent::WorkspaceNeeded {
+            session: s.id,
+            call_id: "c1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({}),
+        };
+        st.fold(needed());
+        assert_eq!(st.folder_wait(s.id).map(|f| f.call_id.as_str()), Some("c1"));
+        st.fold(ChatEvent::ToolStarted {
+            session: s.id,
+            call_id: "c1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({}),
+        });
+        assert!(st.folder_wait(s.id).is_none());
+        st.fold(needed());
+        st.fold(run_ended(&s, RunOutcome::Cancelled, None));
+        assert!(st.folder_wait(s.id).is_none());
     }
 
     #[test]

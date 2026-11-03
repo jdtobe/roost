@@ -156,7 +156,7 @@ async fn a_real_model_uses_the_tools() {
         handle.send(ChatCommand::CreateAgent {
             lifetime: SessionLifetime::Persisted,
             model: model.clone(),
-            workspace: ws.path().to_path_buf(),
+            workspace: Some(ws.path().to_path_buf()),
         });
         let id = loop {
             match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {

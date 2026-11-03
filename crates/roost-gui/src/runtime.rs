@@ -2008,7 +2008,7 @@ mod tests {
         tx.send(BackendRequest::Chat(ChatCommand::CreateAgent {
             lifetime: roost_core::session::SessionLifetime::Persisted,
             model: "llama3:8b".into(),
-            workspace: work.path().to_path_buf(),
+            workspace: Some(work.path().to_path_buf()),
         }))
         .unwrap();
         let id = wait_for(&rx, |e| match e {
@@ -2110,7 +2110,7 @@ mod tests {
         tx.send(BackendRequest::Chat(ChatCommand::CreateAgent {
             lifetime: roost_core::session::SessionLifetime::Persisted,
             model: "llama3:8b".into(),
-            workspace: work.path().to_path_buf(),
+            workspace: Some(work.path().to_path_buf()),
         }))
         .unwrap();
         let id = wait_for(&rx, |e| match e {
@@ -2238,7 +2238,7 @@ mod tests {
         tx.send(BackendRequest::Chat(ChatCommand::CreateAgent {
             lifetime: roost_core::session::SessionLifetime::Persisted,
             model: "llama3:8b".into(),
-            workspace: work.path().to_path_buf(),
+            workspace: Some(work.path().to_path_buf()),
         }))
         .unwrap();
         let id = wait_for(&rx, |e| match e {

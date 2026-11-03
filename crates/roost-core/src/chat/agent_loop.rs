@@ -48,7 +48,8 @@ pub(super) struct AgentRun {
     collected: Vec<(String, Value)>,
     queue: VecDeque<PendingCall>,
     inbox: VecDeque<String>,
-    workspace: Arc<Workspace>,
+    /// `None` until the user attaches a folder.
+    workspace: Option<Arc<Workspace>>,
     next_call: u32,
     /// Questions this run has asked the user.
     asked: u32,
@@ -63,7 +64,7 @@ impl AgentRun {
         arguments: &Value,
         lim: &Limits,
     ) -> Option<ChangePreview> {
-        change::plan(&self.workspace, name, arguments, lim)
+        change::plan(self.workspace.as_deref()?, name, arguments, lim)
             .ok()
             .flatten()
             .map(|c| c.card())
@@ -83,10 +84,15 @@ impl AgentRun {
         Some(RunPreview {
             prefix: command::allow_prefix(&command),
             command,
-            folder: self.workspace.root().to_path_buf(),
+            folder: self.workspace.as_deref()?.root().to_path_buf(),
             timeout_secs: lim.run_timeout.as_secs(),
             output_kb: lim.run_output_bytes / 1024,
         })
+    }
+
+    /// Whether a working directory is attached.
+    pub(super) fn has_workspace(&self) -> bool {
+        self.workspace.is_some()
     }
 
     pub(super) fn collect(&mut self, name: String, arguments: Value) {
@@ -139,10 +145,13 @@ fn gated(
 /// are on and the steps left appended as structured context.
 fn system_prompt(s: &Session, tools: &EffectiveToolConfig, steps_left: u32) -> String {
     let tools: Vec<&str> = registry::offered(tools).iter().map(|t| t.name).collect();
-    let workspace = s
-        .workspace
-        .as_ref()
-        .map_or_else(String::new, |p| p.display().to_string());
+    let workspace = s.workspace.as_ref().map_or_else(
+        || {
+            "none attached (a file or command tool will ask the user to choose a folder)"
+                .to_string()
+        },
+        |p| p.display().to_string(),
+    );
     format!(
         "{CHAT_SYSTEM_PROMPT} {AGENT_PROMPT_ADDITION}\n\nWorkspace: {workspace}\nTools: {}\nSteps remaining: {steps_left}",
         if tools.is_empty() {
@@ -160,9 +169,9 @@ impl Manager {
         &mut self,
         lifetime: SessionLifetime,
         model: &str,
-        workspace: PathBuf,
+        workspace: Option<PathBuf>,
     ) {
-        if let Err(e) = Workspace::open(&workspace) {
+        if let Some(Err(e)) = workspace.as_deref().map(Workspace::open) {
             self.session_error(None, format!("That folder cannot be used: {e}"));
             return;
         }
@@ -265,20 +274,14 @@ impl Manager {
             }
         }
         let opened = match live.s.workspace.as_deref().map(Workspace::open) {
-            Some(Ok(w)) => Arc::new(w),
+            Some(Ok(w)) => Some(Arc::new(w)),
             Some(Err(e)) => {
                 live.slot = Slot::Idle;
                 reject(self, SendRejection::NoWorkspace(e.to_string()));
                 return;
             }
-            None => {
-                live.slot = Slot::Idle;
-                reject(
-                    self,
-                    SendRejection::NoWorkspace("this agent has no workspace folder".into()),
-                );
-                return;
-            }
+            // The agent can start; a tool that needs a folder asks for one.
+            None => None,
         };
         let user = match &intent {
             Intent::Send(text) => {
@@ -500,6 +503,10 @@ impl Manager {
             self.ask_question(id, call);
             return;
         }
+        if !agent.has_workspace() && registry::needs_workspace(&call.name) {
+            self.need_workspace(id, call);
+            return;
+        }
         let config = gated(&live.s.effective_tools, writes, runs);
         let mut ask = registry::needs_approval(&config, &call.name);
         let preview = agent.preview(&call.name, &call.arguments, &lim);
@@ -585,7 +592,7 @@ impl Manager {
         };
         live.s.start_tool(call.msg);
         let (workspace, config, run, room) = (
-            Arc::clone(&agent.workspace),
+            agent.workspace.clone(),
             gated(&live.s.effective_tools, writes, runs),
             agent.run,
             live.s.undo_room(lim.undo_bytes),
@@ -611,7 +618,7 @@ impl Manager {
                     change: None,
                 });
             })
-        } else {
+        } else if let Some(workspace) = workspace {
             tokio::task::spawn_blocking(move || {
                 let (result, change) = registry::call_tracked(
                     &workspace,
@@ -631,6 +638,18 @@ impl Manager {
                     call_id,
                     result,
                     change,
+                });
+            })
+        } else {
+            // Only reachable for a call that is not a known tool; it fails
+            // like any call that cannot run.
+            tokio::spawn(async move {
+                let _ = tx.send(RunMsg::ToolDone {
+                    session: id,
+                    run,
+                    call_id,
+                    result: Err(ToolError::NoWorkspace(name)),
+                    change: None,
                 });
             })
         };
@@ -739,6 +758,117 @@ impl Manager {
                 .await;
             }
         }
+    }
+
+    /// A call needs a working directory and none is attached: the run waits
+    /// in this slot until `ProvideWorkspace`. A tool that is switched off
+    /// fails as usual instead, without bothering the user.
+    fn need_workspace(&mut self, id: SessionId, call: PendingCall) {
+        let Some(live) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        let Some(agent) = live.agent.as_ref() else {
+            return;
+        };
+        let run = agent.run;
+        let usable = registry::specs()
+            .iter()
+            .find(|sp| sp.name == call.name)
+            .is_some_and(|sp| {
+                matches!(
+                    registry::check(&live.s.effective_tools, sp),
+                    Ok(()) | Err(ToolError::NeedsApproval(_))
+                )
+            });
+        live.slot = Slot::Tools(Box::new(ToolRun {
+            join: None,
+            call_id: call.call_id.clone(),
+            msg: call.msg,
+            waiting: usable.then(|| call.clone()),
+            cancel: Arc::new(AtomicBool::new(false)),
+        }));
+        if usable {
+            self.emit(ChatEvent::WorkspaceNeeded {
+                session: id,
+                call_id: call.call_id,
+                name: call.name,
+                arguments: call.arguments,
+            });
+        } else {
+            // Finished by the manager loop, like a call that ran elsewhere.
+            let _ = self.run_tx.send(RunMsg::ToolDone {
+                session: id,
+                run,
+                call_id: call.call_id,
+                result: Err(ToolError::Off(call.name)),
+                change: None,
+            });
+        }
+    }
+
+    /// The user answered `WorkspaceNeeded`: attach the folder and run the
+    /// waiting call, or (`None`) fail it.
+    pub(super) async fn provide_workspace(
+        &mut self,
+        id: SessionId,
+        call_id: String,
+        path: Option<PathBuf>,
+    ) {
+        let Some(live) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        let waiting = match &live.slot {
+            Slot::Tools(t) if t.call_id == call_id => t
+                .waiting
+                .clone()
+                .filter(|c| registry::needs_workspace(&c.name)),
+            _ => None,
+        };
+        let Some(call) =
+            waiting.filter(|_| live.agent.as_ref().is_some_and(|a| !a.has_workspace()))
+        else {
+            return;
+        };
+        let Some(path) = path else {
+            if let Slot::Tools(t) = &mut live.slot {
+                t.waiting = None;
+            }
+            let name = call.name.clone();
+            self.tool_done(
+                id,
+                self.current_run(id),
+                call.call_id,
+                Err(ToolError::NoWorkspace(name)),
+                None,
+            )
+            .await;
+            return;
+        };
+        let opened = match Workspace::open(&path) {
+            Ok(w) => Arc::new(w),
+            Err(e) => {
+                self.session_error(Some(id), format!("That folder cannot be used: {e}"));
+                return;
+            }
+        };
+        if let Err(e) = live.s.set_workspace(path) {
+            self.session_error(Some(id), e.to_string());
+            return;
+        }
+        if let Some(agent) = live.agent.as_mut() {
+            agent.workspace = Some(opened);
+            agent.queue.push_front(call);
+        }
+        live.slot = Slot::Idle;
+        let s = live.s.clone();
+        self.save(&s);
+        self.emit(ChatEvent::AgentSettings {
+            session: id,
+            workspace: s.workspace.clone(),
+            step_budget: s.step_budget,
+            tools: s.effective_tools.clone(),
+        });
+        self.run_next_tool(id).await;
     }
 
     /// The model asks the user a question: the run waits in this slot until
@@ -1170,5 +1300,19 @@ async fn fetch_for_agent(
             Err(web::FetchError::Failed(why)) => Err(ToolError::Unreadable(why)),
         },
         () = stopped => Err(ToolError::Unreadable("the fetch was stopped".into())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::SessionLifetime;
+
+    #[test]
+    fn the_prompt_says_when_no_folder_is_attached() {
+        let s = Session::new_agent("m", SessionLifetime::Persisted, None::<PathBuf>, 0).unwrap();
+        let prompt = system_prompt(&s, &EffectiveToolConfig::default(), 5);
+        assert!(prompt.contains("Workspace: none attached"), "{prompt}");
+        assert!(prompt.contains("ask the user"), "{prompt}");
     }
 }

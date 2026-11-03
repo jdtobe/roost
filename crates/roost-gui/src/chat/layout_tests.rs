@@ -783,88 +783,6 @@ fn work_lists_only_agents_and_chat_lists_only_chats() {
 }
 
 #[test]
-fn the_new_agent_form_cannot_start_until_the_model_supports_tools() {
-    let size = (1180.0, 820.0);
-    let (tx, sent) = std::sync::mpsc::channel();
-    let (_, rx) = std::sync::mpsc::channel();
-    let mut app = App::new(
-        &Settings::default(),
-        std::path::PathBuf::new(),
-        Machine {
-            ram_gb: 8.0,
-            vram_gb: None,
-        },
-        tx,
-        rx,
-    );
-    {
-        let st = app.state_mut();
-        st.ollama = Some(Some("0.9".into()));
-        st.view = View::Work;
-        st.installed
-            .on_installed_loaded(&Ok(vec![crate::runtime::InstalledEntry {
-                model: roost_core::ollama::InstalledModel {
-                    name: "qwen:7b".into(),
-                    size: 1,
-                    params: None,
-                    quant: None,
-                    family: None,
-                    modified: String::new(),
-                    digest: String::new(),
-                },
-                source_repo: None,
-            }]));
-        st.chat.fold(ChatEvent::Rows(vec![]));
-        st.chat_ui.new_agent.open = true;
-        st.chat_ui.new_agent.model = Some("qwen:7b".into());
-        st.chat_ui.new_agent.folder = Some(std::env::temp_dir());
-    }
-    let mut h = Harness::new(false);
-    run(&mut app, &mut h, size, 3);
-    let start = app
-        .state_mut()
-        .chat_ui
-        .probe
-        .start_agent
-        .expect("Start button");
-    click(&mut app, &mut h, size, start.center());
-    assert!(
-        sent_chat_commands(&sent).is_empty(),
-        "disabled while tool support is unknown"
-    );
-
-    app.state_mut().chat.fold(ChatEvent::ModelCapabilities {
-        model: "qwen:7b".into(),
-        tools: false,
-    });
-    run(&mut app, &mut h, size, 3);
-    let texts = h
-        .frame_texts(vec2(size.0, size.1), vec![], |ui| app.show(ui))
-        .join("\n");
-    assert!(texts.contains("does not support tools"), "{texts}");
-    click(&mut app, &mut h, size, start.center());
-    assert!(
-        sent_chat_commands(&sent).is_empty(),
-        "still disabled for a model without tools"
-    );
-
-    app.state_mut().chat.fold(ChatEvent::ModelCapabilities {
-        model: "qwen:7b".into(),
-        tools: true,
-    });
-    run(&mut app, &mut h, size, 3);
-    let start = app.state_mut().chat_ui.probe.start_agent.unwrap();
-    click(&mut app, &mut h, size, start.center());
-    let cmds = sent_chat_commands(&sent);
-    assert!(
-        matches!(cmds.as_slice(), [ChatCommand::CreateAgent { lifetime: SessionLifetime::Persisted, model, workspace }]
-            if model == "qwen:7b" && *workspace == std::env::temp_dir()),
-        "{cmds:?}"
-    );
-    assert!(!app.state_mut().chat_ui.new_agent.open);
-}
-
-#[test]
 fn enter_steers_a_running_agent() {
     let size = (1180.0, 820.0);
     let (mut app, sent, s) = agent_fixture();
@@ -2031,9 +1949,9 @@ fn without_a_speech_engine_the_icon_is_disabled_and_does_nothing() {
 }
 
 #[test]
-fn new_agent_works_while_an_agent_chat_is_open() {
+fn new_work_opens_a_session_without_a_model_or_a_folder_while_another_chat_is_open() {
     let size = (1180.0, 820.0);
-    let (mut app, sent, s) = agent_fixture();
+    let (mut app, sent, _s) = agent_fixture();
     {
         let st = app.state_mut();
         st.installed
@@ -2060,17 +1978,11 @@ fn new_agent_works_while_an_agent_chat_is_open() {
         size,
         egui::pos2(button.left() + 30.0, button.center().y),
     );
-    assert!(app.state_mut().chat_ui.new_agent.open);
-    let texts = texts_of(&mut app, &mut h, size);
-    assert!(
-        texts.contains("The agent can only read inside the folder"),
-        "the form is shown:\n{texts}"
-    );
     let cmds = sent_chat_commands(&sent);
     assert!(
-        cmds.iter()
-            .any(|c| matches!(c, ChatCommand::Close(id) if *id == s.id)),
-        "the chat on screen is let go: {cmds:?}"
+        matches!(cmds.as_slice(), [ChatCommand::CreateAgent { lifetime: SessionLifetime::Persisted, model, workspace: None }]
+            if model.is_empty()),
+        "New Work opens a session with no model and no folder, not a form: {cmds:?}"
     );
 }
 
@@ -4170,4 +4082,189 @@ fn a_fetch_asks_with_the_exact_address_and_offers_to_allow_the_host_for_the_chat
             "{size:?}: {cmds:?}"
         );
     }
+}
+
+// ---- an agent without a folder
+
+fn wait_for_folder(app: &mut App, session: roost_core::session::SessionId) {
+    app.state_mut().chat.fold(ChatEvent::WorkspaceNeeded {
+        session,
+        call_id: "call_9".into(),
+        name: "read_file".into(),
+        arguments: serde_json::json!({"path": "src/main.rs"}),
+    });
+}
+
+#[test]
+fn a_call_that_needs_a_folder_shows_a_card_with_choose_and_skip() {
+    for size in SIZES {
+        let (mut app, sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        wait_for_folder(&mut app, s.id);
+        run(&mut app, &mut h, size, 4);
+        let texts = texts_of(&mut app, &mut h, size);
+        assert!(
+            texts.contains("No working directory is attached") && texts.contains("read_file"),
+            "{size:?}: {texts}"
+        );
+        let p = app.state_mut().chat_ui.probe.clone();
+        let composer = p.composer.unwrap();
+        let pane = p.pane.unwrap();
+        assert_eq!(p.folder_buttons.len(), 2, "{size:?}");
+        for b in &p.folder_buttons {
+            assert!(inside(*b, composer), "{size:?}: {b:?} outside {composer:?}");
+            assert!(
+                b.top() >= pane.bottom() - 0.5,
+                "{size:?}: below the transcript"
+            );
+        }
+        let _ = sent_chat_commands(&sent);
+        click(&mut app, &mut h, size, p.folder_buttons[1].center());
+        let cmds = sent_chat_commands(&sent);
+        assert!(
+            matches!(cmds.as_slice(), [ChatCommand::ProvideWorkspace { session, call_id, path: None }]
+                if *session == s.id && call_id == "call_9"),
+            "{size:?}: {cmds:?}"
+        );
+        run(&mut app, &mut h, size, 2);
+        assert!(
+            app.state_mut().chat_ui.probe.folder_buttons.is_empty(),
+            "the card goes away once answered"
+        );
+    }
+}
+
+#[test]
+fn the_folder_card_goes_when_the_tool_starts_or_the_run_ends() {
+    let size = (1180.0, 820.0);
+    for end in [0, 1] {
+        let (mut app, _sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        wait_for_folder(&mut app, s.id);
+        run(&mut app, &mut h, size, 3);
+        assert_eq!(app.state_mut().chat_ui.probe.folder_buttons.len(), 2);
+        if end == 0 {
+            app.state_mut().chat.fold(ChatEvent::ToolStarted {
+                session: s.id,
+                call_id: "call_9".into(),
+                name: "read_file".into(),
+                arguments: serde_json::json!({}),
+            });
+        } else {
+            app.state_mut().chat.fold(ChatEvent::RunEnded {
+                session: s.id,
+                outcome: roost_core::chat::RunOutcome::Cancelled,
+                message: None,
+            });
+        }
+        run(&mut app, &mut h, size, 3);
+        assert!(app.state_mut().chat_ui.probe.folder_buttons.is_empty());
+    }
+}
+
+#[test]
+fn choosing_a_folder_answers_the_waiting_call_instead_of_changing_the_folder() {
+    let (mut app, _sent, s) = agent_fixture();
+    let path = std::path::PathBuf::from("/tmp/project");
+    let idle = super::chrome::folder_choice(&app.state_mut().chat, s.id, path.clone());
+    assert!(matches!(idle, ChatCommand::SetWorkspace(id, ref p) if id == s.id && *p == path));
+    wait_for_folder(&mut app, s.id);
+    let waiting = super::chrome::folder_choice(&app.state_mut().chat, s.id, path.clone());
+    assert!(
+        matches!(waiting, ChatCommand::ProvideWorkspace { session, ref call_id, path: Some(ref p) }
+            if session == s.id && call_id == "call_9" && *p == path),
+        "{waiting:?}"
+    );
+}
+
+#[test]
+fn an_agent_without_a_folder_shows_a_no_folder_pill() {
+    for size in SIZES {
+        let (mut app, _sent, mut s) = agent_fixture();
+        s.workspace = None;
+        app.state_mut().chat.fold(ChatEvent::Opened(Box::new(s)));
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let (pill, composer) = (
+            p.folder_pill.expect("a pill even with no folder"),
+            p.composer.unwrap(),
+        );
+        assert!(
+            inside(pill, composer),
+            "{size:?}: {pill:?} outside {composer:?}"
+        );
+    }
+}
+
+#[test]
+fn the_model_popup_of_a_session_without_a_model_marks_the_tool_models() {
+    let size = (1180.0, 820.0);
+    let (mut app, sent, mut s) = agent_fixture();
+    s.model = String::new();
+    {
+        let st = app.state_mut();
+        let names = ["llama3:8b", "mistral:7b", "qwen:7b"];
+        st.installed.on_installed_loaded(&Ok(names
+            .iter()
+            .map(|n| crate::runtime::InstalledEntry {
+                model: roost_core::ollama::InstalledModel {
+                    name: (*n).into(),
+                    size: 1,
+                    params: None,
+                    quant: None,
+                    family: None,
+                    modified: String::new(),
+                    digest: String::new(),
+                },
+                source_repo: None,
+            })
+            .collect()));
+        let mut r = row_for(&s, "Config walkthrough");
+        r.mode = SessionMode::Agent;
+        st.chat.fold(ChatEvent::Rows(vec![r]));
+        st.chat.fold(ChatEvent::Opened(Box::new(s)));
+        st.chat.fold(ChatEvent::ModelCapabilities {
+            model: "qwen:7b".into(),
+            tools: true,
+        });
+        st.chat.fold(ChatEvent::ModelCapabilities {
+            model: "llama3:8b".into(),
+            tools: false,
+        });
+    }
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let chip = app
+        .state_mut()
+        .chat_ui
+        .probe
+        .model_chip
+        .expect("model chip");
+    assert!(texts_of(&mut app, &mut h, size).contains("Choose a model"));
+    let _ = sent_chat_commands(&sent);
+    click(&mut app, &mut h, size, chip.center());
+    run(&mut app, &mut h, size, 3);
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(texts.lines().any(|l| l.trim() == "tools"), "{texts}");
+    assert!(
+        texts.contains("no tools") && texts.contains("checking"),
+        "{texts}"
+    );
+    assert!(
+        texts.find("qwen:7b") < texts.find("llama3:8b"),
+        "tool models first: {texts}"
+    );
+    let cmds = sent_chat_commands(&sent);
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, ChatCommand::CheckModel(m) if m == "mistral:7b")),
+        "the unknown model is checked: {cmds:?}"
+    );
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, ChatCommand::CheckModel(m) if m == "qwen:7b" || m == "llama3:8b")),
+        "known models are not asked again: {cmds:?}"
+    );
 }

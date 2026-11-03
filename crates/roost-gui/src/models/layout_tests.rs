@@ -238,9 +238,12 @@ fn chat_starts_a_chat_with_the_model_and_work_opens_the_agent_form() {
         .expect("Work button");
     click(&mut app, &mut h, size, work.center());
     assert_eq!(app.state_mut().view, View::Work);
-    let st = app.state_mut();
-    assert!(st.chat_ui.new_agent.open);
-    assert_eq!(st.chat_ui.new_agent.model.as_deref(), Some(name.as_str()));
+    let reqs = sent(&rx);
+    assert!(
+        reqs.iter().any(|r| matches!(r,
+            BackendRequest::Chat(ChatCommand::CreateAgent { model, workspace: None, .. }) if *model == name)),
+        "{reqs:?}"
+    );
 }
 
 #[test]
