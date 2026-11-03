@@ -725,8 +725,25 @@ pub enum ToolsGate {
     Ready,
 }
 
-pub(super) fn tools_gate(_app: &AppState, _s: &Session) -> ToolsGate {
-    ToolsGate::Ready
+/// The model a session uses now: the list's view of it, else the session's own.
+pub(super) fn model_in_use(app: &AppState, s: &Session) -> String {
+    app.chat
+        .rows()
+        .iter()
+        .find(|r| r.id == s.id)
+        .map_or_else(|| s.model.clone(), |r| r.model.clone())
+}
+
+pub(super) fn tools_gate(app: &AppState, s: &Session) -> ToolsGate {
+    let model = model_in_use(app, s);
+    if model.is_empty() {
+        return ToolsGate::NoModel;
+    }
+    match app.chat.supports_tools(&model) {
+        None => ToolsGate::Checking,
+        Some(false) => ToolsGate::ChatOnly,
+        Some(true) => ToolsGate::Ready,
+    }
 }
 
 /// Height of the pills under the input.
@@ -740,6 +757,18 @@ pub(super) fn pill(
     body: PillBody<'_>,
     enabled: bool,
     selected: bool,
+) -> (egui::Rect, egui::Response) {
+    pill_tinted(ui, t, body, enabled, selected, None)
+}
+
+/// A pill whose icon and text are drawn in `tint` instead of the usual colour.
+pub(super) fn pill_tinted(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    body: PillBody<'_>,
+    enabled: bool,
+    selected: bool,
+    tint: Option<egui::Color32>,
 ) -> (egui::Rect, egui::Response) {
     let galley = match &body {
         PillBody::Icon(_) => None,
@@ -778,7 +807,7 @@ pub(super) fn pill(
         egui::Stroke::new(1.0, t.line),
         egui::StrokeKind::Inside,
     );
-    let colour = if enabled { t.fg2 } else { t.fg3 };
+    let colour = tint.unwrap_or(if enabled { t.fg2 } else { t.fg3 });
     match (body, galley) {
         (PillBody::Icon(icon), _) => {
             crate::icons::paint(ui.painter(), rect, icon, colour);
@@ -847,6 +876,7 @@ pub(super) fn plus_menu(
     s: &Session,
 ) {
     let running = app.chat.is_running(s.id);
+    let tools_ready = tools_gate(app, s) == ToolsGate::Ready;
     let (_, resp) = pill(ui, t, PillBody::Icon(Icon::Plus), true, false);
     let resp = resp.on_hover_text("Add to this chat");
     #[cfg(test)]
@@ -859,7 +889,7 @@ pub(super) fn plus_menu(
         .show(|ui| {
             ui.set_min_width(200.0);
             if s.mode == SessionMode::Agent {
-                let can_pick = !running || app.chat.folder_wait(s.id).is_some();
+                let can_pick = tools_ready && (!running || app.chat.folder_wait(s.id).is_some());
                 if ui
                     .add_enabled(can_pick, egui::Button::new("Working folder…").frame(false))
                     .clicked()
@@ -1126,6 +1156,46 @@ pub(super) fn agent_settings(
 ) {
     let running = app.chat.is_running(s.id);
     let id = s.id;
+    let gate = tools_gate(app, s);
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.tools_gate = Some(gate);
+        app.chat_ui.probe.tools_icon_red = Some(gate == ToolsGate::ChatOnly);
+    }
+    if gate != ToolsGate::Ready {
+        // Not usable yet: dimmed while there is nothing to go on, red when the
+        // model is known not to support tools. Either way it says why.
+        let red = gate == ToolsGate::ChatOnly;
+        let (rect, resp) = pill_tinted(
+            ui,
+            t,
+            PillBody::Icon(Icon::Tools),
+            red,
+            false,
+            red.then_some(t.bad),
+        );
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.agent_chip = Some(rect);
+        }
+        let _ = rect;
+        let why = match gate {
+            ToolsGate::NoModel => "Tools are off until you choose a model",
+            ToolsGate::Checking => "Checking whether this model supports tools…",
+            _ => "This session is effectively chat only: the model does not support tools",
+        };
+        let resp = resp.on_hover_text(why);
+        if red {
+            egui::Popup::from_toggle_button_response(&resp)
+                .align(egui::RectAlign::TOP_START)
+                .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| {
+                    ui.set_max_width(280.0);
+                    ui.label(why);
+                });
+        }
+        return;
+    }
     let (rect, resp) = pill(ui, t, PillBody::Icon(Icon::Tools), true, false);
     let resp = resp.on_hover_text(
         "Tools and settings: the folder this agent works in, its step budget and its tools",
@@ -1556,6 +1626,10 @@ pub(super) fn status_line(ui: &mut egui::Ui, app: &AppState, t: &Tokens, s: &Ses
     }
 }
 
+/// How long the model chip flashes, and how many half-cycles a second.
+const MODEL_FLASH_SECS: f64 = 1.0;
+const MODEL_FLASH_RATE: f64 = 6.0;
+
 /// Below this width the pills under the input shrink: the folder to its icon
 /// and the model name to a few characters.
 pub(super) const COMPACT_PILLS_W: f32 = 700.0;
@@ -1571,12 +1645,7 @@ pub(super) fn model_chip(
     max_chars: usize,
 ) {
     let running = app.chat.is_running(s.id);
-    let model = app
-        .chat
-        .rows()
-        .iter()
-        .find(|r| r.id == s.id)
-        .map_or_else(|| s.model.clone(), |r| r.model.clone());
+    let model = model_in_use(app, s);
     let loaded = app
         .ollama
         .as_ref()
@@ -1594,87 +1663,124 @@ pub(super) fn model_chip(
     } else {
         format!("{dot}{}", truncate_chars(&model, max_chars))
     };
-    let (chip, _) = MenuButton::new(RichText::new(label).size(12.0))
-        .config(sticky())
-        .ui(ui, |ui| {
-            ui.set_min_width(240.0);
-            ui.label(RichText::new("Model").font(semibold(11.0)).color(t.fg3));
-            ui.add_enabled_ui(!running, |ui| {
-                let agent = s.mode == SessionMode::Agent;
-                let mut names: Vec<&str> = installed.iter().map(String::as_str).collect();
-                if !model.is_empty() && !names.contains(&model.as_str()) {
-                    names.insert(0, &model);
-                }
-                if agent {
-                    // An agent needs tools: say which models have them, ask
-                    // about the ones not known yet (once each), and list the
-                    // capable ones first.
-                    for name in &names {
-                        if app.chat.supports_tools(name).is_none()
-                            && app.chat_ui.checked_models.insert((*name).to_string())
-                        {
-                            out.push(BackendRequest::Chat(ChatCommand::CheckModel(
-                                (*name).to_string(),
-                            )));
-                        }
+    // A Work session cannot do anything without a model: the chip is red, and
+    // flashes inverted a few times when a send is refused for want of one.
+    let red = model.is_empty() && s.mode == SessionMode::Agent;
+    let now = ui.input(|i| i.time);
+    let elapsed = app.chat_ui.model_flash.map(|at| now - at);
+    if elapsed.is_some_and(|e| e >= MODEL_FLASH_SECS) {
+        app.chat_ui.model_flash = None;
+    }
+    let inverted = red
+        && app.chat_ui.model_flash.is_some()
+        && elapsed.is_some_and(|e| ((e * MODEL_FLASH_RATE) as u64).is_multiple_of(2));
+    if app.chat_ui.model_flash.is_some() {
+        ui.ctx().request_repaint();
+    }
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.model_look = Some((red, inverted));
+    }
+    let text = RichText::new(label).size(12.0);
+    let text = match (red, inverted) {
+        (true, true) => text.color(egui::Color32::WHITE),
+        (true, false) => text.color(t.bad),
+        _ => text,
+    };
+    let (chip, _) = ui
+        .scope(|ui| {
+            if inverted {
+                let w = &mut ui.visuals_mut().widgets;
+                w.inactive.weak_bg_fill = t.bad;
+                w.hovered.weak_bg_fill = t.bad;
+                w.active.weak_bg_fill = t.bad;
+                w.inactive.bg_stroke.color = t.bad;
+            } else if red {
+                ui.visuals_mut().widgets.inactive.bg_stroke.color = t.bad;
+            }
+            MenuButton::new(text).config(sticky()).ui(ui, |ui| {
+                ui.set_min_width(240.0);
+                ui.label(RichText::new("Model").font(semibold(11.0)).color(t.fg3));
+                ui.add_enabled_ui(!running, |ui| {
+                    let agent = s.mode == SessionMode::Agent;
+                    let mut names: Vec<&str> = installed.iter().map(String::as_str).collect();
+                    if !model.is_empty() && !names.contains(&model.as_str()) {
+                        names.insert(0, &model);
                     }
-                    names.sort_by_key(|n| app.chat.supports_tools(n) != Some(true));
-                }
-                for name in names {
-                    ui.horizontal(|ui| {
-                        if ui.selectable_label(name == model, name).clicked() && name != model {
-                            out.push(BackendRequest::Chat(ChatCommand::SetModel(
-                                s.id,
-                                name.into(),
-                            )));
-                            ui.close();
+                    if agent {
+                        // An agent needs tools: say which models have them, ask
+                        // about the ones not known yet (once each), and list the
+                        // capable ones first.
+                        for name in &names {
+                            if app.chat.supports_tools(name).is_none()
+                                && app.chat_ui.checked_models.insert((*name).to_string())
+                            {
+                                out.push(BackendRequest::Chat(ChatCommand::CheckModel(
+                                    (*name).to_string(),
+                                )));
+                            }
                         }
-                        if agent {
-                            let (tag, colour) = match app.chat.supports_tools(name) {
-                                Some(true) => ("tools", t.ok),
-                                Some(false) => ("no tools", t.fg3),
-                                None => ("checking…", t.fg3),
-                            };
-                            ui.label(RichText::new(tag).size(11.0).color(colour));
-                        }
-                    });
-                }
-            });
-            ui.separator();
-            match &loaded {
-                Some(m) => {
-                    let note = m
-                        .expires_at
-                        .as_deref()
-                        .and_then(|e| unload_note(e, chrono::Utc::now()))
-                        .unwrap_or_else(|| "loaded".to_string());
-                    ui.horizontal(|ui| {
+                        names.sort_by_key(|n| app.chat.supports_tools(n) != Some(true));
+                    }
+                    for name in names {
+                        ui.horizontal(|ui| {
+                            if ui.selectable_label(name == model, name).clicked() && name != model {
+                                out.push(BackendRequest::Chat(ChatCommand::SetModel(
+                                    s.id,
+                                    name.into(),
+                                )));
+                                ui.close();
+                            }
+                            if agent {
+                                let (tag, colour) = match app.chat.supports_tools(name) {
+                                    Some(true) => ("tools", t.ok),
+                                    Some(false) => ("no tools", t.fg3),
+                                    None => ("checking…", t.fg3),
+                                };
+                                ui.label(RichText::new(tag).size(11.0).color(colour));
+                            }
+                        });
+                    }
+                });
+                ui.separator();
+                match &loaded {
+                    Some(m) => {
+                        let note = m
+                            .expires_at
+                            .as_deref()
+                            .and_then(|e| unload_note(e, chrono::Utc::now()))
+                            .unwrap_or_else(|| "loaded".to_string());
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(format!("In memory · {note}"))
+                                    .size(12.0)
+                                    .color(t.ok),
+                            );
+                            let unload = secondary(ui, "Unload", true);
+                            #[cfg(test)]
+                            {
+                                app.chat_ui.probe.model_unload = Some(unload.rect);
+                            }
+                            if unload.clicked() {
+                                out.push(BackendRequest::UnloadModel(m.name.clone()));
+                                app.running.retain(|x| x.name != m.name);
+                                ui.close();
+                            }
+                        });
+                    }
+                    None => {
                         ui.label(
-                            RichText::new(format!("In memory · {note}"))
-                                .size(12.0)
-                                .color(t.ok),
-                        );
-                        let unload = secondary(ui, "Unload", true);
-                        #[cfg(test)]
-                        {
-                            app.chat_ui.probe.model_unload = Some(unload.rect);
-                        }
-                        if unload.clicked() {
-                            out.push(BackendRequest::UnloadModel(m.name.clone()));
-                            app.running.retain(|x| x.name != m.name);
-                            ui.close();
-                        }
-                    });
-                }
-                None => {
-                    ui.label(
-                        RichText::new("Not in memory. Ollama loads it when you send a message.")
+                            RichText::new(
+                                "Not in memory. Ollama loads it when you send a message.",
+                            )
                             .size(12.0)
                             .color(t.fg3),
-                    );
+                        );
+                    }
                 }
-            }
-        });
+            })
+        })
+        .inner;
     #[cfg(test)]
     {
         app.chat_ui.probe.model_chip = Some(chip.rect);

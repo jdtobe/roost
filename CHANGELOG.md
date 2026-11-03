@@ -21,6 +21,7 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - New Work opens a session at once with no model and no folder (the New agent form is gone). The model popup marks which models support tools, asking Ollama about the ones it does not know yet, and sending says "Choose a model first." until one is chosen.
 - A Work session can start with no working directory. When a file or command tool needs one, the run pauses on a card ("No working directory is attached") with Choose folder… and Skip; choosing runs the paused call (through approval as usual), skipping fails it so the model carries on. The folder pill shows "No folder" and does the same. Reopening the chat asks again, and a switched-off tool fails without asking.
+- Work sessions start with tools and the folder locked. The tools button, the folder pill, the R/W/N pills and `Working folder…` stay off until the chosen model is confirmed to support tools (Roost asks Ollama as soon as a model is chosen). A model without tools turns the tools button red and says the session is effectively chat only. The "Choose a model" chip is red while no model is set and flashes inverted when you press Enter without one.
 
 ### Chat and history (stage 2)
 

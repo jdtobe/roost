@@ -4273,7 +4273,13 @@ fn the_model_popup_of_a_session_without_a_model_marks_the_tool_models() {
     );
 }
 
-fn session_with_model(model: &str) -> (App, Receiver<BackendRequest>, roost_core::session::SessionId) {
+fn session_with_model(
+    model: &str,
+) -> (
+    App,
+    Receiver<BackendRequest>,
+    roost_core::session::SessionId,
+) {
     let (mut app, sent, mut s) = agent_fixture();
     s.model = model.into();
     let id = s.id;
@@ -4308,7 +4314,10 @@ fn the_model_chip_is_red_without_a_model_and_flashes_when_enter_is_pressed() {
     assert_eq!(app.state_mut().chat_ui.probe.model_look, Some((true, true)));
     app.state_mut().chat_ui.model_flash = Some(f64::NEG_INFINITY);
     run(&mut app, &mut h, size, 2);
-    assert_eq!(app.state_mut().chat_ui.probe.model_look, Some((true, false)));
+    assert_eq!(
+        app.state_mut().chat_ui.probe.model_look,
+        Some((true, false))
+    );
     assert!(app.state_mut().chat_ui.model_flash.is_none());
 }
 
