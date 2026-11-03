@@ -1,6 +1,6 @@
 # A tool registry that agents can configure and that can grow (DRAFT)
 
-Status: **draft for the user's review, written while they were away (2026-11-02).** Nothing here is built. Sections marked **Decision needed** are the things only the user can settle; everything else is a recommendation with a reason. After review this goes to an implementation plan.
+Status: **draft; the open decisions were settled on 2026-11-03 (section 3.5), the rest awaits the user's approval.** Nothing here is built. After review this goes to an implementation plan.
 
 ## 1. Intent
 
@@ -43,14 +43,14 @@ A `Tool` trait in core, implemented once per tool, registered in one list:
 
 ### 3.4 Extensibility
 
-Phase 1 (this work): built-in tools only, through the trait; adding one is one file plus registration plus tests. Phase 2 (later, its own spec): external tools. Candidates are MCP servers and user-defined command tools. Both must pass through the same permission model and the same `plan` gate; neither may bypass the Settings switches. **Decision needed:** which external kind, if any, you want first (3.5).
+Phase 1 (this work): built-in tools only, through the trait; adding one is one file plus registration plus tests. Phase 2 (later, its own spec): external tools. Candidates are MCP servers and user-defined command tools. Both must pass through the same permission model and the same `plan` gate; neither may bypass the Settings switches. The user chose built-in tools first (3.5).
 
-### 3.5 Decisions needed
+### 3.5 Decisions (settled by the user, 2026-11-03)
 
-1. **Presets.** Should a reusable "agent preset" exist (a named set of tool settings you pick when starting Work), or is per-session configuration enough for now? Recommendation: per-session only now; presets later, since the data model above makes them a saved `EffectiveToolConfig`.
-2. **External tools first?** MCP servers, user command tools, or neither yet. Recommendation: neither yet; design phase 2 after phase 1 has run for a while.
-3. **Merging tools.** The old note (4d) asked whether `read_file`/`read_binary`, `search_text`/`search_bytes`, `list_dir`/`find_files`, `write_file`/`edit_file` should merge. The hand run found nothing wrong with the split. Recommendation: keep the split; the trait makes a later merge cheap.
-4. **Tool ids in saved chats.** Sessions store tool names. Recommendation: names stay stable ids forever; a renamed tool keeps an alias.
+1. **Presets:** none. Configuration is per session only. Presets can come later as a saved `EffectiveToolConfig`.
+2. **External tools:** built-in tools first. MCP may follow; the likely route is the official Rust SDK (`rmcp`) as a client, feeding the same registry, permission model and `plan` gate. Not designed here.
+3. **Merging tools:** keep the read/search/list/write pairs split. `fetch_url` goes away once `http_request` exists; the readable-text step becomes an option of `http_request`. Until then `fetch_url` stays.
+4. **Tool ids:** no stability promise yet. Roost is early, so a rename or removal does not need an alias; old saved chats may simply lose a switch for a tool that no longer exists.
 
 ## 4. Order of work (each step ships on its own, tests first)
 
