@@ -437,22 +437,23 @@ impl Session {
         Session::base(SessionMode::Chat, model, lifetime, None, now_ms)
     }
 
-    /// An agent session; the workspace must be absolute and contain no `..`.
+    /// An agent session. A workspace, if given, must be absolute and contain
+    /// no `..`; without one the agent asks for a folder when a tool needs it.
     pub fn new_agent(
         model: &str,
         lifetime: SessionLifetime,
         workspace: impl Into<Option<PathBuf>>,
         now_ms: u64,
     ) -> Result<Session, SessionError> {
-        let Some(workspace) = workspace.into() else {
-            return Err(SessionError::InvalidWorkspace(String::new()));
-        };
-        check_workspace(&workspace)?;
+        let workspace = workspace.into();
+        if let Some(path) = &workspace {
+            check_workspace(path)?;
+        }
         Ok(Session::base(
             SessionMode::Agent,
             model,
             lifetime,
-            Some(workspace),
+            workspace,
             now_ms,
         ))
     }

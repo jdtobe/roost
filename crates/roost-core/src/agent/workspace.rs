@@ -33,6 +33,8 @@ pub enum ToolError {
     NeedsApproval(String),
     #[error("the user declined this tool call")]
     Declined,
+    #[error("No working directory is attached to this agent, so {0} cannot run. The user chose not to attach one.")]
+    NoWorkspace(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
