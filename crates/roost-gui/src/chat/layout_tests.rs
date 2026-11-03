@@ -747,6 +747,10 @@ fn agent_fixture() -> (App, Receiver<BackendRequest>, Session) {
     st.view = View::Work;
     st.chat.fold(ChatEvent::Rows(vec![agent_row, chat_row]));
     st.chat.fold(ChatEvent::Opened(Box::new(s.clone())));
+    st.chat.fold(ChatEvent::ModelCapabilities {
+        model: LONG_MODEL.into(),
+        tools: true,
+    });
     (app, sent, s)
 }
 
@@ -4267,4 +4271,110 @@ fn the_model_popup_of_a_session_without_a_model_marks_the_tool_models() {
             .any(|c| matches!(c, ChatCommand::CheckModel(m) if m == "qwen:7b" || m == "llama3:8b")),
         "known models are not asked again: {cmds:?}"
     );
+}
+
+fn session_with_model(model: &str) -> (App, Receiver<BackendRequest>, roost_core::session::SessionId) {
+    let (mut app, sent, mut s) = agent_fixture();
+    s.model = model.into();
+    let id = s.id;
+    let mut r = row_for(&s, "Config walkthrough");
+    r.mode = SessionMode::Agent;
+    let st = app.state_mut();
+    st.chat.fold(ChatEvent::Rows(vec![r]));
+    st.chat.fold(ChatEvent::Opened(Box::new(s)));
+    (app, sent, id)
+}
+
+#[test]
+fn the_model_chip_is_red_without_a_model_and_flashes_when_enter_is_pressed() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, id) = session_with_model("");
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    assert_eq!(
+        app.state_mut().chat_ui.probe.model_look,
+        Some((true, false)),
+        "red, not flashing"
+    );
+    *app.state_mut().chat.draft_mut(id) = "hello".into();
+    app.state_mut().chat_ui.focus_composer = true;
+    run(&mut app, &mut h, size, 3);
+    h.frame(vec2(size.0, size.1), press_enter(), |ui| app.show(ui));
+    run(&mut app, &mut h, size, 1);
+    assert!(
+        app.state_mut().chat_ui.model_flash.is_some(),
+        "Enter started a flash"
+    );
+    assert_eq!(app.state_mut().chat_ui.probe.model_look, Some((true, true)));
+    app.state_mut().chat_ui.model_flash = Some(f64::NEG_INFINITY);
+    run(&mut app, &mut h, size, 2);
+    assert_eq!(app.state_mut().chat_ui.probe.model_look, Some((true, false)));
+    assert!(app.state_mut().chat_ui.model_flash.is_none());
+}
+
+#[test]
+fn a_session_with_a_model_has_a_plain_model_chip() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, _) = session_with_model(LONG_MODEL);
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    assert_eq!(
+        app.state_mut().chat_ui.probe.model_look,
+        Some((false, false))
+    );
+}
+
+#[test]
+fn tools_and_the_folder_wait_for_the_model_to_be_known_to_support_tools() {
+    use super::chrome::ToolsGate;
+    let size = (1180.0, 820.0);
+    // No model: nothing to use yet.
+    let (mut app, sent, _) = session_with_model("");
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let p = app.state_mut().chat_ui.probe.clone();
+    assert_eq!(p.tools_gate, Some(ToolsGate::NoModel));
+    assert!(p.folder_pill.is_none() && p.chips.is_empty(), "{p:?}");
+    assert_eq!(p.tools_icon_red, Some(false));
+    // A model nobody has asked about: ask, and stay locked meanwhile.
+    let (mut app, sent2, _) = session_with_model("fresh:1b");
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let p = app.state_mut().chat_ui.probe.clone();
+    assert_eq!(p.tools_gate, Some(ToolsGate::Checking));
+    assert!(p.folder_pill.is_none() && p.chips.is_empty(), "{p:?}");
+    let cmds = sent_chat_commands(&sent2);
+    assert_eq!(
+        cmds.iter()
+            .filter(|c| matches!(c, ChatCommand::CheckModel(m) if m == "fresh:1b"))
+            .count(),
+        1,
+        "{cmds:?}"
+    );
+    // It has no tools: chat only, and the icon says so in red.
+    app.state_mut().chat.fold(ChatEvent::ModelCapabilities {
+        model: "fresh:1b".into(),
+        tools: false,
+    });
+    run(&mut app, &mut h, size, 3);
+    let p = app.state_mut().chat_ui.probe.clone();
+    assert_eq!(p.tools_gate, Some(ToolsGate::ChatOnly));
+    assert_eq!(p.tools_icon_red, Some(true));
+    assert!(p.folder_pill.is_none() && p.chips.is_empty(), "{p:?}");
+    let icon = p.agent_chip.unwrap();
+    click(&mut app, &mut h, size, icon.center());
+    run(&mut app, &mut h, size, 3);
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(texts.contains("chat only"), "{texts}");
+    // With tools it is all there.
+    app.state_mut().chat.fold(ChatEvent::ModelCapabilities {
+        model: "fresh:1b".into(),
+        tools: true,
+    });
+    run(&mut app, &mut h, size, 3);
+    let p = app.state_mut().chat_ui.probe.clone();
+    assert_eq!(p.tools_gate, Some(ToolsGate::Ready));
+    assert_eq!(p.tools_icon_red, Some(false));
+    assert!(p.folder_pill.is_some() && !p.chips.is_empty(), "{p:?}");
+    let _ = sent;
 }

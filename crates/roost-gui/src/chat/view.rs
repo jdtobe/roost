@@ -78,6 +78,8 @@ pub struct ChatUi {
     pub focus_composer: bool,
     /// Models whose tool support the model popup has already asked about.
     pub checked_models: std::collections::HashSet<String>,
+    /// When the model chip started flashing (egui time), after Enter with no model.
+    pub model_flash: Option<f64>,
     /// What the rail's search field holds.
     pub rail_query: String,
     /// The reply being read aloud.
@@ -202,6 +204,11 @@ pub struct ChatProbe {
     pub input_rect: Option<egui::Rect>,
     pub model_chip: Option<egui::Rect>,
     pub model_unload: Option<egui::Rect>,
+    /// Whether the model chip is red, and whether it is in the inverted half of a flash.
+    pub model_look: Option<(bool, bool)>,
+    pub tools_gate: Option<super::chrome::ToolsGate>,
+    /// Whether the tools icon is painted red.
+    pub tools_icon_red: Option<bool>,
     pub tool_groups: Vec<egui::Rect>,
     pub tool_cards: Vec<egui::Rect>,
     pub queued_chips: Vec<egui::Rect>,

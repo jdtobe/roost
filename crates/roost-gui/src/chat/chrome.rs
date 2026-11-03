@@ -713,6 +713,22 @@ pub(super) enum PillBody<'a> {
     IconText(Icon, &'a str),
 }
 
+/// Whether an agent session can use tools yet, from what is known of its model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolsGate {
+    /// No model is chosen.
+    NoModel,
+    /// The model's capabilities have not come back yet.
+    Checking,
+    /// The model has no tool support: the session is chat only.
+    ChatOnly,
+    Ready,
+}
+
+pub(super) fn tools_gate(_app: &AppState, _s: &Session) -> ToolsGate {
+    ToolsGate::Ready
+}
+
 /// Height of the pills under the input.
 pub(super) const PILL_H: f32 = 26.0;
 
