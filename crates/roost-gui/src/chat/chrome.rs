@@ -789,6 +789,16 @@ pub(super) fn pill(
     (rect, resp)
 }
 
+/// What choosing `path` means for this chat: the folder a waiting call needs,
+/// or a new working folder for an idle agent.
+pub(super) fn folder_choice(
+    _chat: &super::state::ChatState,
+    id: roost_core::session::SessionId,
+    path: std::path::PathBuf,
+) -> ChatCommand {
+    ChatCommand::SetWorkspace(id, path)
+}
+
 /// Asks for a folder and sends it as the agent's working folder.
 fn choose_folder(out: &mut Vec<BackendRequest>, id: roost_core::session::SessionId) {
     if let Some(path) = rfd::FileDialog::new()

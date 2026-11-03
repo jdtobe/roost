@@ -782,9 +782,8 @@ fn work_lists_only_agents_and_chat_lists_only_chats() {
     );
 }
 
-#[test]
-fn the_new_agent_form_cannot_start_until_the_model_supports_tools() {
-    let size = (1180.0, 820.0);
+/// The New Work form open on an installed model, with a folder chosen.
+fn new_agent_form_fixture() -> (App, Receiver<BackendRequest>) {
     let (tx, sent) = std::sync::mpsc::channel();
     let (_, rx) = std::sync::mpsc::channel();
     let mut app = App::new(
@@ -819,6 +818,13 @@ fn the_new_agent_form_cannot_start_until_the_model_supports_tools() {
         st.chat_ui.new_agent.model = Some("qwen:7b".into());
         st.chat_ui.new_agent.folder = Some(std::env::temp_dir());
     }
+    (app, sent)
+}
+
+#[test]
+fn the_new_agent_form_cannot_start_until_the_model_supports_tools() {
+    let size = (1180.0, 820.0);
+    let (mut app, sent) = new_agent_form_fixture();
     let mut h = Harness::new(false);
     run(&mut app, &mut h, size, 3);
     let start = app
@@ -4170,4 +4176,142 @@ fn a_fetch_asks_with_the_exact_address_and_offers_to_allow_the_host_for_the_chat
             "{size:?}: {cmds:?}"
         );
     }
+}
+
+// ---- an agent without a folder
+
+fn wait_for_folder(app: &mut App, session: roost_core::session::SessionId) {
+    app.state_mut().chat.fold(ChatEvent::WorkspaceNeeded {
+        session,
+        call_id: "call_9".into(),
+        name: "read_file".into(),
+        arguments: serde_json::json!({"path": "src/main.rs"}),
+    });
+}
+
+#[test]
+fn a_call_that_needs_a_folder_shows_a_card_with_choose_and_skip() {
+    for size in SIZES {
+        let (mut app, sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        wait_for_folder(&mut app, s.id);
+        run(&mut app, &mut h, size, 4);
+        let texts = texts_of(&mut app, &mut h, size);
+        assert!(
+            texts.contains("No working directory is attached") && texts.contains("read_file"),
+            "{size:?}: {texts}"
+        );
+        let p = app.state_mut().chat_ui.probe.clone();
+        let composer = p.composer.unwrap();
+        let pane = p.pane.unwrap();
+        assert_eq!(p.folder_buttons.len(), 2, "{size:?}");
+        for b in &p.folder_buttons {
+            assert!(inside(*b, composer), "{size:?}: {b:?} outside {composer:?}");
+            assert!(
+                b.top() >= pane.bottom() - 0.5,
+                "{size:?}: below the transcript"
+            );
+        }
+        let _ = sent_chat_commands(&sent);
+        click(&mut app, &mut h, size, p.folder_buttons[1].center());
+        let cmds = sent_chat_commands(&sent);
+        assert!(
+            matches!(cmds.as_slice(), [ChatCommand::ProvideWorkspace { session, call_id, path: None }]
+                if *session == s.id && call_id == "call_9"),
+            "{size:?}: {cmds:?}"
+        );
+        run(&mut app, &mut h, size, 2);
+        assert!(
+            app.state_mut().chat_ui.probe.folder_buttons.is_empty(),
+            "the card goes away once answered"
+        );
+    }
+}
+
+#[test]
+fn the_folder_card_goes_when_the_tool_starts_or_the_run_ends() {
+    let size = (1180.0, 820.0);
+    for end in [0, 1] {
+        let (mut app, _sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        wait_for_folder(&mut app, s.id);
+        run(&mut app, &mut h, size, 3);
+        assert_eq!(app.state_mut().chat_ui.probe.folder_buttons.len(), 2);
+        if end == 0 {
+            app.state_mut().chat.fold(ChatEvent::ToolStarted {
+                session: s.id,
+                call_id: "call_9".into(),
+                name: "read_file".into(),
+                arguments: serde_json::json!({}),
+            });
+        } else {
+            app.state_mut().chat.fold(ChatEvent::RunEnded {
+                session: s.id,
+                outcome: roost_core::chat::RunOutcome::Cancelled,
+                message: None,
+            });
+        }
+        run(&mut app, &mut h, size, 3);
+        assert!(app.state_mut().chat_ui.probe.folder_buttons.is_empty());
+    }
+}
+
+#[test]
+fn choosing_a_folder_answers_the_waiting_call_instead_of_changing_the_folder() {
+    let (mut app, _sent, s) = agent_fixture();
+    let path = std::path::PathBuf::from("/tmp/project");
+    let idle = super::chrome::folder_choice(&app.state_mut().chat, s.id, path.clone());
+    assert!(matches!(idle, ChatCommand::SetWorkspace(id, ref p) if id == s.id && *p == path));
+    wait_for_folder(&mut app, s.id);
+    let waiting = super::chrome::folder_choice(&app.state_mut().chat, s.id, path.clone());
+    assert!(
+        matches!(waiting, ChatCommand::ProvideWorkspace { session, ref call_id, path: Some(ref p) }
+            if session == s.id && call_id == "call_9" && *p == path),
+        "{waiting:?}"
+    );
+}
+
+#[test]
+fn an_agent_without_a_folder_shows_a_no_folder_pill() {
+    for size in SIZES {
+        let (mut app, _sent, mut s) = agent_fixture();
+        s.workspace = None;
+        app.state_mut().chat.fold(ChatEvent::Opened(Box::new(s)));
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let (pill, composer) = (
+            p.folder_pill.expect("a pill even with no folder"),
+            p.composer.unwrap(),
+        );
+        assert!(
+            inside(pill, composer),
+            "{size:?}: {pill:?} outside {composer:?}"
+        );
+    }
+}
+
+#[test]
+fn a_new_agent_can_start_without_a_folder() {
+    let size = (1180.0, 820.0);
+    let (mut app, sent) = new_agent_form_fixture();
+    app.state_mut().chat_ui.new_agent.folder = None;
+    let mut h = Harness::new(false);
+    app.state_mut().chat.fold(ChatEvent::ModelCapabilities {
+        model: "qwen:7b".into(),
+        tools: true,
+    });
+    run(&mut app, &mut h, size, 3);
+    let start = app
+        .state_mut()
+        .chat_ui
+        .probe
+        .start_agent
+        .expect("Start button");
+    click(&mut app, &mut h, size, start.center());
+    let cmds = sent_chat_commands(&sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::CreateAgent { model, workspace: None, .. }] if model == "qwen:7b"),
+        "{cmds:?}"
+    );
 }

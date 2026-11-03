@@ -134,6 +134,9 @@ pub struct ChatProbe {
     pub edit_icon: Option<egui::Rect>,
     /// The Allow / Allow for this session / Deny buttons of an approval card.
     pub approval_buttons: Vec<egui::Rect>,
+    /// The Choose folder / Skip buttons of the card shown when a tool needs a
+    /// working directory.
+    pub folder_buttons: Vec<egui::Rect>,
     /// The question card, its options (and the typed-answer field last, when
     /// there is one), and its Send and Skip buttons.
     pub question_card: Option<egui::Rect>,

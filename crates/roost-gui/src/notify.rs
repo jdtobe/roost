@@ -19,6 +19,8 @@ pub enum Kind {
     Approval,
     /// The agent asked a question.
     Question,
+    /// A tool needs a working directory.
+    Folder,
     Finished,
     Stopped,
 }
@@ -28,6 +30,7 @@ impl Kind {
         match self {
             Kind::Approval => "Needs your approval",
             Kind::Question => "Has a question for you",
+            Kind::Folder => "Needs a folder to work in",
             Kind::Finished => "Run finished",
             Kind::Stopped => "Run stopped",
         }
@@ -333,6 +336,13 @@ mod tests {
             .unwrap(),
         };
         assert_eq!(kind_of(&asked).map(|k| k.1), Some(Kind::Question));
+        let folder = ChatEvent::WorkspaceNeeded {
+            session: SessionId::new(),
+            call_id: "c".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({}),
+        };
+        assert_eq!(kind_of(&folder).map(|k| k.1), Some(Kind::Folder));
         assert_eq!(
             kind_of(&ended(RunOutcome::Completed)).map(|k| k.1),
             Some(Kind::Finished)

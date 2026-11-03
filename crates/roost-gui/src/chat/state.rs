@@ -113,6 +113,13 @@ pub struct PendingApproval {
     pub run: Option<roost_core::agent::command::RunPreview>,
 }
 
+/// A tool call that waits for a working directory to be attached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingFolder {
+    pub call_id: String,
+    pub name: String,
+}
+
 /// A question the agent is waiting for the user to answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingQuestion {
@@ -821,6 +828,11 @@ impl ChatState {
         self.approvals.get(&id)
     }
 
+    /// The call that waits for the user to attach a working directory.
+    pub fn folder_wait(&self, _id: SessionId) -> Option<&PendingFolder> {
+        None
+    }
+
     /// The question this chat's agent is waiting to have answered.
     pub fn question(&self, id: SessionId) -> Option<&PendingQuestion> {
         self.questions.get(&id)
@@ -1394,6 +1406,29 @@ mod tests {
             outcome,
             message: message.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn a_call_that_needs_a_folder_is_remembered_until_it_starts_or_the_run_ends() {
+        let (mut st, s) = agent_state();
+        let needed = || ChatEvent::WorkspaceNeeded {
+            session: s.id,
+            call_id: "c1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({}),
+        };
+        st.fold(needed());
+        assert_eq!(st.folder_wait(s.id).map(|f| f.call_id.as_str()), Some("c1"));
+        st.fold(ChatEvent::ToolStarted {
+            session: s.id,
+            call_id: "c1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({}),
+        });
+        assert!(st.folder_wait(s.id).is_none());
+        st.fold(needed());
+        st.fold(run_ended(&s, RunOutcome::Cancelled, None));
+        assert!(st.folder_wait(s.id).is_none());
     }
 
     #[test]
