@@ -152,6 +152,8 @@ pub enum SendAttempt {
     /// A reply is already running or a send is in flight; the draft is kept.
     Busy,
     Empty,
+    /// No model is chosen for this chat yet; the draft is kept.
+    NoModel,
 }
 
 /// What the rail shows for a chat: its title, or until it has one the start
@@ -1427,6 +1429,33 @@ mod tests {
             outcome,
             message: message.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn sending_without_a_model_is_refused_and_keeps_the_draft() {
+        let mut st = ChatState::default();
+        let mut s = Session::new_agent(
+            "",
+            SessionLifetime::Persisted,
+            None::<std::path::PathBuf>,
+            1,
+        )
+        .unwrap();
+        s.push_user("earlier", 2);
+        let mut r = roost_core_row(&s);
+        r.mode = SessionMode::Agent;
+        st.fold(ChatEvent::Rows(vec![r]));
+        st.fold(ChatEvent::Opened(Box::new(s.clone())));
+        *st.draft_mut(s.id) = "hello".into();
+        assert!(matches!(st.try_send(s.id), SendAttempt::NoModel));
+        assert_eq!(st.draft(s.id), "hello");
+        // Nothing is in flight, so choosing a model and pressing again works.
+        let mut chosen = s.clone();
+        chosen.model = "m:1".into();
+        let mut r = roost_core_row(&chosen);
+        r.mode = SessionMode::Agent;
+        st.fold(ChatEvent::Rows(vec![r]));
+        assert!(matches!(st.try_send(s.id), SendAttempt::Sent(_)));
     }
 
     #[test]

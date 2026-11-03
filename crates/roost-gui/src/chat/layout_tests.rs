@@ -782,94 +782,6 @@ fn work_lists_only_agents_and_chat_lists_only_chats() {
     );
 }
 
-/// The New Work form open on an installed model, with a folder chosen.
-fn new_agent_form_fixture() -> (App, Receiver<BackendRequest>) {
-    let (tx, sent) = std::sync::mpsc::channel();
-    let (_, rx) = std::sync::mpsc::channel();
-    let mut app = App::new(
-        &Settings::default(),
-        std::path::PathBuf::new(),
-        Machine {
-            ram_gb: 8.0,
-            vram_gb: None,
-        },
-        tx,
-        rx,
-    );
-    {
-        let st = app.state_mut();
-        st.ollama = Some(Some("0.9".into()));
-        st.view = View::Work;
-        st.installed
-            .on_installed_loaded(&Ok(vec![crate::runtime::InstalledEntry {
-                model: roost_core::ollama::InstalledModel {
-                    name: "qwen:7b".into(),
-                    size: 1,
-                    params: None,
-                    quant: None,
-                    family: None,
-                    modified: String::new(),
-                    digest: String::new(),
-                },
-                source_repo: None,
-            }]));
-        st.chat.fold(ChatEvent::Rows(vec![]));
-        st.chat_ui.new_agent.open = true;
-        st.chat_ui.new_agent.model = Some("qwen:7b".into());
-        st.chat_ui.new_agent.folder = Some(std::env::temp_dir());
-    }
-    (app, sent)
-}
-
-#[test]
-fn the_new_agent_form_cannot_start_until_the_model_supports_tools() {
-    let size = (1180.0, 820.0);
-    let (mut app, sent) = new_agent_form_fixture();
-    let mut h = Harness::new(false);
-    run(&mut app, &mut h, size, 3);
-    let start = app
-        .state_mut()
-        .chat_ui
-        .probe
-        .start_agent
-        .expect("Start button");
-    click(&mut app, &mut h, size, start.center());
-    assert!(
-        sent_chat_commands(&sent).is_empty(),
-        "disabled while tool support is unknown"
-    );
-
-    app.state_mut().chat.fold(ChatEvent::ModelCapabilities {
-        model: "qwen:7b".into(),
-        tools: false,
-    });
-    run(&mut app, &mut h, size, 3);
-    let texts = h
-        .frame_texts(vec2(size.0, size.1), vec![], |ui| app.show(ui))
-        .join("\n");
-    assert!(texts.contains("does not support tools"), "{texts}");
-    click(&mut app, &mut h, size, start.center());
-    assert!(
-        sent_chat_commands(&sent).is_empty(),
-        "still disabled for a model without tools"
-    );
-
-    app.state_mut().chat.fold(ChatEvent::ModelCapabilities {
-        model: "qwen:7b".into(),
-        tools: true,
-    });
-    run(&mut app, &mut h, size, 3);
-    let start = app.state_mut().chat_ui.probe.start_agent.unwrap();
-    click(&mut app, &mut h, size, start.center());
-    let cmds = sent_chat_commands(&sent);
-    assert!(
-        matches!(cmds.as_slice(), [ChatCommand::CreateAgent { lifetime: SessionLifetime::Persisted, model, workspace }]
-            if model == "qwen:7b" && *workspace == Some(std::env::temp_dir())),
-        "{cmds:?}"
-    );
-    assert!(!app.state_mut().chat_ui.new_agent.open);
-}
-
 #[test]
 fn enter_steers_a_running_agent() {
     let size = (1180.0, 820.0);
@@ -2037,7 +1949,7 @@ fn without_a_speech_engine_the_icon_is_disabled_and_does_nothing() {
 }
 
 #[test]
-fn new_agent_works_while_an_agent_chat_is_open() {
+fn new_work_opens_a_session_without_a_model_or_a_folder_while_another_chat_is_open() {
     let size = (1180.0, 820.0);
     let (mut app, sent, s) = agent_fixture();
     {
@@ -2066,18 +1978,13 @@ fn new_agent_works_while_an_agent_chat_is_open() {
         size,
         egui::pos2(button.left() + 30.0, button.center().y),
     );
-    assert!(app.state_mut().chat_ui.new_agent.open);
-    let texts = texts_of(&mut app, &mut h, size);
-    assert!(
-        texts.contains("The agent works only inside the folder"),
-        "the form is shown:\n{texts}"
-    );
     let cmds = sent_chat_commands(&sent);
     assert!(
-        cmds.iter()
-            .any(|c| matches!(c, ChatCommand::Close(id) if *id == s.id)),
-        "the chat on screen is let go: {cmds:?}"
+        matches!(cmds.as_slice(), [ChatCommand::CreateAgent { lifetime: SessionLifetime::Persisted, model, workspace: None }]
+            if model.is_empty()),
+        "New Work opens a session with no model and no folder, not a form: {cmds:?}"
     );
+    assert!(app.state_mut().chat_ui.focus_composer);
 }
 
 fn ask_for_approval(app: &mut App, session: roost_core::session::SessionId) {
@@ -4292,26 +4199,73 @@ fn an_agent_without_a_folder_shows_a_no_folder_pill() {
 }
 
 #[test]
-fn a_new_agent_can_start_without_a_folder() {
+fn the_model_popup_of_a_session_without_a_model_marks_the_tool_models() {
     let size = (1180.0, 820.0);
-    let (mut app, sent) = new_agent_form_fixture();
-    app.state_mut().chat_ui.new_agent.folder = None;
+    let (mut app, sent, mut s) = agent_fixture();
+    s.model = String::new();
+    {
+        let st = app.state_mut();
+        let names = ["llama3:8b", "mistral:7b", "qwen:7b"];
+        st.installed.on_installed_loaded(&Ok(names
+            .iter()
+            .map(|n| crate::runtime::InstalledEntry {
+                model: roost_core::ollama::InstalledModel {
+                    name: (*n).into(),
+                    size: 1,
+                    params: None,
+                    quant: None,
+                    family: None,
+                    modified: String::new(),
+                    digest: String::new(),
+                },
+                source_repo: None,
+            })
+            .collect()));
+        let mut r = row_for(&s, "Config walkthrough");
+        r.mode = SessionMode::Agent;
+        st.chat.fold(ChatEvent::Rows(vec![r]));
+        st.chat.fold(ChatEvent::Opened(Box::new(s)));
+        st.chat.fold(ChatEvent::ModelCapabilities {
+            model: "qwen:7b".into(),
+            tools: true,
+        });
+        st.chat.fold(ChatEvent::ModelCapabilities {
+            model: "llama3:8b".into(),
+            tools: false,
+        });
+    }
     let mut h = Harness::new(false);
-    app.state_mut().chat.fold(ChatEvent::ModelCapabilities {
-        model: "qwen:7b".into(),
-        tools: true,
-    });
-    run(&mut app, &mut h, size, 3);
-    let start = app
+    run(&mut app, &mut h, size, 4);
+    let chip = app
         .state_mut()
         .chat_ui
         .probe
-        .start_agent
-        .expect("Start button");
-    click(&mut app, &mut h, size, start.center());
+        .model_chip
+        .expect("model chip");
+    assert!(texts_of(&mut app, &mut h, size).contains("Choose a model"));
+    let _ = sent_chat_commands(&sent);
+    click(&mut app, &mut h, size, chip.center());
+    run(&mut app, &mut h, size, 3);
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(texts.lines().any(|l| l.trim() == "tools"), "{texts}");
+    assert!(
+        texts.contains("no tools") && texts.contains("checking"),
+        "{texts}"
+    );
+    assert!(
+        texts.find("qwen:7b") < texts.find("llama3:8b"),
+        "tool models first: {texts}"
+    );
     let cmds = sent_chat_commands(&sent);
     assert!(
-        matches!(cmds.as_slice(), [ChatCommand::CreateAgent { model, workspace: None, .. }] if model == "qwen:7b"),
-        "{cmds:?}"
+        cmds.iter()
+            .any(|c| matches!(c, ChatCommand::CheckModel(m) if m == "mistral:7b")),
+        "the unknown model is checked: {cmds:?}"
+    );
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, ChatCommand::CheckModel(m) if m == "qwen:7b" || m == "llama3:8b")),
+        "known models are not asked again: {cmds:?}"
     );
 }

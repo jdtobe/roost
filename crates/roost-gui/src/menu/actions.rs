@@ -205,23 +205,25 @@ mod tests {
     }
 
     #[test]
-    fn new_agent_opens_the_work_tab_form_and_asks_about_tool_support() {
+    fn new_agent_opens_a_work_session_with_no_model_and_no_folder() {
         let ctx = egui::Context::default();
         let mut app = with_model();
         app.view = View::Chat;
         let (reqs, _) = pass(&ctx, |c| handle(&mut app, c, MenuAction::NewAgent));
         assert_eq!(app.view, View::Work);
-        assert!(app.chat_ui.new_agent.open);
-        assert_eq!(app.chat_ui.new_agent.model.as_deref(), Some("llama3:8b"));
+        assert!(app.chat_ui.focus_composer);
         assert!(matches!(
             reqs.as_slice(),
-            [BackendRequest::Chat(ChatCommand::CheckModel(m))] if m == "llama3:8b"
+            [BackendRequest::Chat(ChatCommand::CreateAgent {
+                lifetime: SessionLifetime::Persisted,
+                workspace: None,
+                model,
+            })] if model.is_empty()
         ));
-        // Without a model there is nothing to start.
+        // Even with no model installed there is a session to open.
         let mut none = AppState::new();
         let (reqs, _) = pass(&ctx, |c| handle(&mut none, c, MenuAction::NewAgent));
-        assert!(reqs.is_empty());
-        assert!(!none.chat_ui.new_agent.open);
+        assert_eq!(reqs.len(), 1);
     }
 
     #[test]
