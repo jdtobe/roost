@@ -76,8 +76,8 @@ pub struct ChatUi {
     pub inspect: Option<SessionId>,
     /// Put the cursor in the composer on the next frame.
     pub focus_composer: bool,
-    /// The New agent form on the Work tab.
-    pub new_agent: NewAgent,
+    /// Models whose tool support the model popup has already asked about.
+    pub checked_models: std::collections::HashSet<String>,
     /// What the rail's search field holds.
     pub rail_query: String,
     /// The reply being read aloud.
@@ -102,17 +102,6 @@ pub struct BranchDialog {
     pub session: SessionId,
     pub message: roost_core::session::MessageId,
     pub model: String,
-}
-
-/// The form for starting an agent: a folder, a model that supports tools.
-#[derive(Default)]
-pub struct NewAgent {
-    pub open: bool,
-    pub folder: Option<std::path::PathBuf>,
-    pub model: Option<String>,
-    pub incognito: bool,
-    /// The model whose tool support was last asked about.
-    pub checked: Option<String>,
 }
 
 /// Painted rectangles recorded for the headless layout tests.
@@ -214,7 +203,6 @@ pub struct ChatProbe {
     pub model_chip: Option<egui::Rect>,
     pub model_unload: Option<egui::Rect>,
     pub tool_groups: Vec<egui::Rect>,
-    pub start_agent: Option<egui::Rect>,
     pub tool_cards: Vec<egui::Rect>,
     pub queued_chips: Vec<egui::Rect>,
     pub delete_button: Option<(egui::Rect, String)>,
@@ -395,10 +383,11 @@ fn rail(
     let band_right = ui.max_rect().right() + 12.0;
     let band_top = ui.max_rect().top() - 12.0;
     let mut start = None;
-    let ready = model.is_some();
+    // New Work opens at once and the model is chosen in the session.
+    let ready = model.is_some() || mode == SessionMode::Agent;
     let hint = "Install a model first (Models), then start one.";
     let (plain, incognito) = if mode == SessionMode::Agent {
-        ("New agent…", "New incognito agent…")
+        ("New agent", "New incognito agent")
     } else {
         ("New chat", "New incognito chat")
     };
@@ -451,12 +440,13 @@ fn rail(
     }
     if let Some(lifetime) = start.filter(|_| ready) {
         if mode == SessionMode::Agent {
-            open_new_agent(
-                app,
-                model.clone(),
-                lifetime == SessionLifetime::Incognito,
-                out,
-            );
+            app.chat_ui.focus_composer = true;
+            app.chat_ui.inspect = None;
+            out.push(BackendRequest::Chat(ChatCommand::CreateAgent {
+                lifetime,
+                model: String::new(),
+                workspace: None,
+            }));
         } else if let Some(model) = model.clone() {
             app.chat_ui.focus_composer = true;
             app.chat_ui.inspect = None;
@@ -629,35 +619,6 @@ fn rail_icon_button(
     resp
 }
 
-/// Opens the New agent form with a default model, and asks whether it can use tools.
-pub(crate) fn open_new_agent(
-    app: &mut AppState,
-    model: Option<String>,
-    incognito: bool,
-    out: &mut Vec<BackendRequest>,
-) {
-    app.chat_ui.inspect = None;
-    // The form takes the place of the chat on screen. A saved chat is let go
-    // so the manager can unload it (a running one finishes first); an
-    // incognito one stays alive in memory and can be picked from the list.
-    if let Some(shown) = app.chat.open.take() {
-        if shown.lifetime == SessionLifetime::Persisted {
-            out.push(BackendRequest::Chat(ChatCommand::Close(shown.id)));
-        }
-    }
-    app.chat_ui.new_agent.open = true;
-    app.chat_ui.new_agent.incognito = incognito;
-    if app.chat_ui.new_agent.model.is_none() {
-        app.chat_ui.new_agent.model = model;
-    }
-    if let Some(m) = app.chat_ui.new_agent.model.clone() {
-        if app.chat_ui.new_agent.checked.as_ref() != Some(&m) {
-            app.chat_ui.new_agent.checked = Some(m.clone());
-            out.push(BackendRequest::Chat(ChatCommand::CheckModel(m)));
-        }
-    }
-}
-
 fn rail_list(
     ui: &mut egui::Ui,
     app: &mut AppState,
@@ -775,7 +736,6 @@ fn open_chat(
         .find(|r| r.id == id)
         .is_some_and(|r| r.status != RowStatus::Ok);
     app.chat_ui.renaming = None;
-    app.chat_ui.new_agent.open = false;
     app.chat_ui.focus_composer = !bad_row;
     if bad_row {
         app.chat_ui.inspect = Some(id);
@@ -1090,10 +1050,6 @@ fn pane(
             app.select(View::Models);
         }
     }
-    if mode == SessionMode::Agent && app.chat_ui.new_agent.open && open.is_none() {
-        new_agent_panel(ui, app, out, t, installed);
-        return;
-    }
     let Some(s) = open else {
         if let Some(id) = app.chat_ui.inspect {
             inspect(ui, app, out, t, id, now);
@@ -1101,7 +1057,7 @@ fn pane(
             let (title, text) = if mode == SessionMode::Agent {
                 (
                     "Start an agent",
-                    "An agent works inside a folder you choose. It can list, find, search and read files there to answer questions, and it cannot change anything. Send it a message while it works to steer it.",
+                    "Press New to open an agent, then choose a model that supports tools. Give it a folder when it needs one: it asks the first time a tool wants to work with files. Send it a message while it works to steer it.",
                 )
             } else {
                 (
@@ -1825,140 +1781,6 @@ fn folder_card(
 }
 
 // ---------------------------------------------------------------- agents
-
-/// The form for starting an agent: a folder and a model that can use tools.
-fn new_agent_panel(
-    ui: &mut egui::Ui,
-    app: &mut AppState,
-    out: &mut Vec<BackendRequest>,
-    t: &Tokens,
-    installed: &[String],
-) {
-    ui.add_space(8.0);
-    ui.label(RichText::new("New agent").font(semibold(18.0)));
-    ui.add_space(4.0);
-    ui.add(
-        egui::Label::new(
-            RichText::new(
-                "The agent works only inside the folder you choose, and never sees your keys or .env files. You can choose one later: the agent asks when it needs it.",
-            )
-            .color(t.fg2),
-        )
-        .wrap(),
-    );
-    ui.add_space(12.0);
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Folder").font(semibold(13.0)));
-        let shown = app
-            .chat_ui
-            .new_agent
-            .folder
-            .as_ref()
-            .map_or("None yet (optional)".to_string(), |p| {
-                p.display().to_string()
-            });
-        ui.add(egui::Label::new(RichText::new(shown).color(t.fg2)).truncate());
-    });
-    if secondary(ui, "Choose folder…", true).clicked() {
-        if let Some(path) = rfd::FileDialog::new()
-            .set_title("Choose the agent's folder")
-            .pick_folder()
-        {
-            app.chat_ui.new_agent.folder = Some(path);
-        }
-    }
-    ui.add_space(10.0);
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Model").font(semibold(13.0)));
-        let current = app.chat_ui.new_agent.model.clone().unwrap_or_default();
-        let mut choice = None;
-        egui::ComboBox::from_id_salt("new-agent-model")
-            .width(220.0)
-            .selected_text(truncate_chars(&current, 30))
-            .show_ui(ui, |ui| {
-                for name in installed {
-                    if ui.selectable_label(*name == current, name).clicked() {
-                        choice = Some(name.clone());
-                    }
-                }
-            });
-        if let Some(m) = choice.filter(|m| *m != current) {
-            app.chat_ui.new_agent.model = Some(m.clone());
-            app.chat_ui.new_agent.checked = Some(m.clone());
-            out.push(BackendRequest::Chat(ChatCommand::CheckModel(m)));
-        }
-    });
-    let support = app
-        .chat_ui
-        .new_agent
-        .model
-        .as_deref()
-        .and_then(|m| app.chat.supports_tools(m));
-    match (&app.chat_ui.new_agent.model, support) {
-        (None, _) => {}
-        (Some(_), Some(true)) => {
-            ui.label(
-                RichText::new("✓ This model supports tools.")
-                    .size(12.5)
-                    .color(t.ok),
-            );
-        }
-        (Some(_), Some(false)) => {
-            ui.add(
-                egui::Label::new(
-                    RichText::new(
-                        "This model does not support tools, so it cannot run an agent. Choose another.",
-                    )
-                    .size(12.5)
-                    .color(t.warn),
-                )
-                .wrap(),
-            );
-        }
-        (Some(_), None) => {
-            ui.label(
-                RichText::new("Checking whether this model supports tools…")
-                    .size(12.5)
-                    .color(t.fg3),
-            );
-        }
-    }
-    ui.add_space(8.0);
-    ui.checkbox(
-        &mut app.chat_ui.new_agent.incognito,
-        "Incognito (kept in memory only)",
-    );
-    ui.add_space(12.0);
-    ui.horizontal(|ui| {
-        let ready = support == Some(true);
-        let start = primary_button(ui, "Start", ready)
-            .on_disabled_hover_text("Choose a model that supports tools.");
-        #[cfg(test)]
-        {
-            app.chat_ui.probe.start_agent = Some(start.rect);
-        }
-        if start.clicked() {
-            if let Some(model) = app.chat_ui.new_agent.model.clone() {
-                let folder = app.chat_ui.new_agent.folder.clone();
-                let lifetime = if app.chat_ui.new_agent.incognito {
-                    SessionLifetime::Incognito
-                } else {
-                    SessionLifetime::Persisted
-                };
-                out.push(BackendRequest::Chat(ChatCommand::CreateAgent {
-                    lifetime,
-                    model,
-                    workspace: folder,
-                }));
-                app.chat_ui.new_agent.open = false;
-                app.chat_ui.focus_composer = true;
-            }
-        }
-        if secondary(ui, "Cancel", true).clicked() {
-            app.chat_ui.new_agent.open = false;
-        }
-    });
-}
 
 /// One tool step of an agent: what it called, how it went, and the result.
 pub(super) fn tool_card(ui: &mut egui::Ui, t: &Tokens, m: &Message, app: &mut AppState) {
@@ -3253,8 +3075,10 @@ fn composer(
         out.push(BackendRequest::Chat(ChatCommand::Stop(id)));
     }
     if send {
-        if let SendAttempt::Sent(cmd) = app.chat.try_send(id) {
-            out.push(BackendRequest::Chat(cmd));
+        match app.chat.try_send(id) {
+            SendAttempt::Sent(cmd) => out.push(BackendRequest::Chat(cmd)),
+            SendAttempt::NoModel => app.chat.notice = Some("Choose a model first.".into()),
+            SendAttempt::Busy | SendAttempt::Empty => {}
         }
     }
 }

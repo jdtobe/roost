@@ -606,6 +606,22 @@ impl ChatState {
         self.queued.get(&id).map_or(&[], Vec::as_slice)
     }
 
+    /// The model a chat uses now (empty until one is chosen): the rail's
+    /// answer, which follows a change, else the open session's.
+    pub fn model_of(&self, id: SessionId) -> String {
+        self.rows
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.model.clone())
+            .or_else(|| {
+                self.open
+                    .as_ref()
+                    .filter(|s| s.id == id)
+                    .map(|s| s.model.clone())
+            })
+            .unwrap_or_default()
+    }
+
     /// `Some(true)` once the model is known to support tools.
     pub fn supports_tools(&self, model: &str) -> Option<bool> {
         self.tool_support.get(model).copied()
@@ -681,6 +697,9 @@ impl ChatState {
         let text = self.draft(id).trim().to_string();
         if text.is_empty() {
             return SendAttempt::Empty;
+        }
+        if self.model_of(id).trim().is_empty() {
+            return SendAttempt::NoModel;
         }
         self.sending.insert(id);
         SendAttempt::Sent(ChatCommand::Send { session: id, text })

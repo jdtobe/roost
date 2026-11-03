@@ -70,19 +70,14 @@ fn new_chat(app: &mut AppState, lifetime: SessionLifetime) -> Vec<BackendRequest
 }
 
 fn new_agent(app: &mut AppState) -> Vec<BackendRequest> {
-    let installed: Vec<String> = app
-        .installed
-        .rows()
-        .iter()
-        .map(|r| r.name().to_string())
-        .collect();
-    let Some(model) = app.chat.default_model(&installed) else {
-        return Vec::new();
-    };
     app.select(View::Work);
-    let mut requests = Vec::new();
-    crate::chat::view::open_new_agent(app, Some(model), false, &mut requests);
-    requests
+    app.chat_ui.inspect = None;
+    app.chat_ui.focus_composer = true;
+    vec![BackendRequest::Chat(ChatCommand::CreateAgent {
+        lifetime: SessionLifetime::Persisted,
+        model: String::new(),
+        workspace: None,
+    })]
 }
 
 /// egui has no "select all" command, so this is the key press it would see.

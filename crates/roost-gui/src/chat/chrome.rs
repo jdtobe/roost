@@ -1573,25 +1573,55 @@ pub(super) fn model_chip(
         })
         .flatten();
     let dot = if loaded.is_some() { "● " } else { "○ " };
-    let label = format!("{dot}{}", truncate_chars(&model, max_chars));
+    let label = if model.is_empty() {
+        "Choose a model".to_string()
+    } else {
+        format!("{dot}{}", truncate_chars(&model, max_chars))
+    };
     let (chip, _) = MenuButton::new(RichText::new(label).size(12.0))
         .config(sticky())
         .ui(ui, |ui| {
             ui.set_min_width(240.0);
             ui.label(RichText::new("Model").font(semibold(11.0)).color(t.fg3));
             ui.add_enabled_ui(!running, |ui| {
+                let agent = s.mode == SessionMode::Agent;
                 let mut names: Vec<&str> = installed.iter().map(String::as_str).collect();
-                if !names.contains(&model.as_str()) {
+                if !model.is_empty() && !names.contains(&model.as_str()) {
                     names.insert(0, &model);
                 }
-                for name in names {
-                    if ui.selectable_label(name == model, name).clicked() && name != model {
-                        out.push(BackendRequest::Chat(ChatCommand::SetModel(
-                            s.id,
-                            name.into(),
-                        )));
-                        ui.close();
+                if agent {
+                    // An agent needs tools: say which models have them, ask
+                    // about the ones not known yet (once each), and list the
+                    // capable ones first.
+                    for name in &names {
+                        if app.chat.supports_tools(name).is_none()
+                            && app.chat_ui.checked_models.insert((*name).to_string())
+                        {
+                            out.push(BackendRequest::Chat(ChatCommand::CheckModel(
+                                (*name).to_string(),
+                            )));
+                        }
                     }
+                    names.sort_by_key(|n| app.chat.supports_tools(n) != Some(true));
+                }
+                for name in names {
+                    ui.horizontal(|ui| {
+                        if ui.selectable_label(name == model, name).clicked() && name != model {
+                            out.push(BackendRequest::Chat(ChatCommand::SetModel(
+                                s.id,
+                                name.into(),
+                            )));
+                            ui.close();
+                        }
+                        if agent {
+                            let (tag, colour) = match app.chat.supports_tools(name) {
+                                Some(true) => ("tools", t.ok),
+                                Some(false) => ("no tools", t.fg3),
+                                None => ("checking…", t.fg3),
+                            };
+                            ui.label(RichText::new(tag).size(11.0).color(colour));
+                        }
+                    });
                 }
             });
             ui.separator();

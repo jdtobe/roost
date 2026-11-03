@@ -19,6 +19,7 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 ### Work without a folder
 
+- New Work opens a session at once with no model and no folder (the New agent form is gone). The model popup marks which models support tools, asking Ollama about the ones it does not know yet, and sending says "Choose a model first." until one is chosen.
 - A Work session can start with no working directory. When a file or command tool needs one, the run pauses on a card ("No working directory is attached") with Choose folder… and Skip; choosing runs the paused call (through approval as usual), skipping fails it so the model carries on. The folder pill shows "No folder" and does the same. Reopening the chat asks again, and a switched-off tool fails without asking.
 
 ### Chat and history (stage 2)

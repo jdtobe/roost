@@ -252,8 +252,13 @@ fn actions(
         app.select(View::Chat);
     }
     if work {
-        app.chat_ui.new_agent.model = Some(name.clone());
-        crate::chat::view::open_new_agent(app, Some(name.clone()), false, out);
+        out.push(BackendRequest::Chat(ChatCommand::CreateAgent {
+            lifetime: SessionLifetime::Persisted,
+            model: name.clone(),
+            workspace: None,
+        }));
+        app.chat_ui.focus_composer = true;
+        app.chat_ui.inspect = None;
         app.select(View::Work);
     }
     if delete {

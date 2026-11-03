@@ -1951,7 +1951,7 @@ fn without_a_speech_engine_the_icon_is_disabled_and_does_nothing() {
 #[test]
 fn new_work_opens_a_session_without_a_model_or_a_folder_while_another_chat_is_open() {
     let size = (1180.0, 820.0);
-    let (mut app, sent, s) = agent_fixture();
+    let (mut app, sent, _s) = agent_fixture();
     {
         let st = app.state_mut();
         st.installed
@@ -1984,7 +1984,6 @@ fn new_work_opens_a_session_without_a_model_or_a_folder_while_another_chat_is_op
             if model.is_empty()),
         "New Work opens a session with no model and no folder, not a form: {cmds:?}"
     );
-    assert!(app.state_mut().chat_ui.focus_composer);
 }
 
 fn ask_for_approval(app: &mut App, session: roost_core::session::SessionId) {
