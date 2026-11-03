@@ -78,6 +78,8 @@ pub struct ChatUi {
     pub focus_composer: bool,
     /// Models whose tool support the model popup has already asked about.
     pub checked_models: std::collections::HashSet<String>,
+    /// When the model chip started flashing (egui time), after Enter with no model.
+    pub model_flash: Option<f64>,
     /// What the rail's search field holds.
     pub rail_query: String,
     /// The reply being read aloud.
@@ -202,6 +204,11 @@ pub struct ChatProbe {
     pub input_rect: Option<egui::Rect>,
     pub model_chip: Option<egui::Rect>,
     pub model_unload: Option<egui::Rect>,
+    /// Whether the model chip is red, and whether it is in the inverted half of a flash.
+    pub model_look: Option<(bool, bool)>,
+    pub tools_gate: Option<super::chrome::ToolsGate>,
+    /// Whether the tools icon is painted red.
+    pub tools_icon_red: Option<bool>,
     pub tool_groups: Vec<egui::Rect>,
     pub tool_cards: Vec<egui::Rect>,
     pub queued_chips: Vec<egui::Rect>,
@@ -3052,11 +3059,23 @@ fn composer(
     // The pills under the input: what can be added and the tools on the left,
     // what the agent may do and the model on the right.
     let compact = ui.available_width() < super::chrome::COMPACT_PILLS_W;
+    // Tools and the folder wait until the model is known to support tools.
+    let gate = super::chrome::tools_gate(app, s);
+    let model = super::chrome::model_in_use(app, s);
+    if agent
+        && !model.is_empty()
+        && app.chat.supports_tools(&model).is_none()
+        && app.chat_ui.checked_models.insert(model.clone())
+    {
+        out.push(BackendRequest::Chat(ChatCommand::CheckModel(model)));
+    }
     ui.horizontal(|ui| {
         super::chrome::plus_menu(ui, app, out, t, s);
         if agent {
             super::chrome::agent_settings(ui, app, out, t, s);
-            super::chrome::folder_pill(ui, app, out, t, s, compact);
+            if gate == super::chrome::ToolsGate::Ready {
+                super::chrome::folder_pill(ui, app, out, t, s, compact);
+            }
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let name_chars = if compact { 14 } else { 28 };
@@ -3066,7 +3085,7 @@ fn composer(
                 ui.spacing_mut().interact_size.y = super::chrome::PILL_H;
                 super::chrome::model_chip(ui, app, out, t, s, installed, name_chars);
             });
-            if agent {
+            if agent && gate == super::chrome::ToolsGate::Ready {
                 super::chrome::permission_pills(ui, app, out, t, s);
             }
         });
@@ -3077,7 +3096,10 @@ fn composer(
     if send {
         match app.chat.try_send(id) {
             SendAttempt::Sent(cmd) => out.push(BackendRequest::Chat(cmd)),
-            SendAttempt::NoModel => app.chat.notice = Some("Choose a model first.".into()),
+            SendAttempt::NoModel => {
+                app.chat.notice = Some("Choose a model first.".into());
+                app.chat_ui.model_flash = Some(ui.input(|i| i.time));
+            }
             SendAttempt::Busy | SendAttempt::Empty => {}
         }
     }
