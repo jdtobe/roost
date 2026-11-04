@@ -2503,6 +2503,45 @@ async fn a_run_may_ask_only_so_many_questions() {
 }
 
 #[tokio::test]
+async fn a_malformed_question_past_the_limit_is_told_about_the_limit() {
+    let mut asks: Vec<_> = (0..5).map(|_| one_of(&["A", "B"])).collect();
+    asks.push(serde_json::json!({"question": "Which?", "kind": "one"}));
+    let (srv, h, id, _ws) = asking_user_agent(asks).await;
+    h.send(id, "ask a lot").await;
+    for n in 1..=5 {
+        h.wait("asked", |e| count_questions(e) >= n).await;
+        let (call_id, _) = question_for(&h.events()).unwrap();
+        h.cmd(ChatCommand::AnswerQuestion {
+            session: id,
+            call_id,
+            answer: None,
+        });
+    }
+    h.wait_run_ended(1).await;
+    let r = tool_reply(&srv, 6);
+    assert!(r.contains("5 questions") && !r.contains("2 to 8"), "{r}");
+}
+
+#[tokio::test]
+async fn a_question_to_a_switched_off_tool_is_off_even_when_malformed() {
+    let (srv, h, id, _ws) = asking_user_agent(vec![
+        serde_json::json!({"question": "Which?", "kind": "one"}),
+    ])
+    .await;
+    h.cmd(ChatCommand::SetToolEnabled(id, "ask_user".into(), false));
+    h.wait("off", |_| {
+        h.try_read(id)
+            .is_some_and(|s| s.effective_tools.tools.get("ask_user") == Some(&false))
+    })
+    .await;
+    h.send(id, "help me choose").await;
+    h.wait_run_ended(1).await;
+    assert_eq!(count_questions(&h.events()), 0);
+    let r = tool_reply(&srv, 1);
+    assert!(r.contains("ask_user") && !r.contains("2 to 8"), "{r}");
+}
+
+#[tokio::test]
 async fn the_model_is_offered_the_tool_unless_it_is_switched_off() {
     let names = |srv: &TcpScript| -> Vec<String> {
         chat_bodies(srv)[0]["tools"]
@@ -3859,6 +3898,100 @@ async fn allowing_a_host_covers_that_host_for_the_chat_and_never_the_whole_web()
         s.effective_tools.capabilities.get("web.fetch"),
         Some(&crate::session::Permission::Ask)
     );
+}
+
+#[tokio::test]
+async fn an_allowed_host_is_fetched_without_asking() {
+    let (_srv, h, id, _ws) = web_agent(vec![
+        chat_route(calls(
+            "fetch_url",
+            serde_json::json!({"url": "https://localhost:9/one"}),
+        )),
+        chat_route(calls(
+            "fetch_url",
+            serde_json::json!({"url": "https://localhost:9/two"}),
+        )),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.send(id, "fetch twice").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::AllowForSession,
+    });
+    h.wait_run_ended(1).await;
+    let events = h.events();
+    assert_eq!(
+        count_approvals(&events),
+        1,
+        "the second fetch was not asked"
+    );
+    assert_eq!(started_tools(&events), 2, "both fetches ran");
+}
+
+#[tokio::test]
+async fn a_fetch_without_an_address_fails_and_the_model_reads_why() {
+    let (srv, h, id, _ws) = web_agent(vec![
+        chat_route(calls("fetch_url", serde_json::json!({}))),
+        chat_route(calls(
+            "fetch_url",
+            serde_json::json!({"url": "not an address"}),
+        )),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.send(id, "fetch nothing").await;
+    h.wait_run_ended(1).await;
+    assert_eq!(count_approvals(&h.events()), 0, "nothing to approve");
+    let first = tool_reply(&srv, 1);
+    assert!(first.contains("url is required"), "{first}");
+    let second = tool_reply(&srv, 2);
+    assert!(second.contains("not a valid address"), "{second}");
+}
+
+#[tokio::test]
+async fn the_web_never_becomes_automatic_on_allow_for_session() {
+    let (_srv, h, id, _ws) = web_agent(vec![
+        chat_route(calls(
+            "fetch_url",
+            serde_json::json!({"url": "https://localhost:9/one"}),
+        )),
+        chat_route(calls(
+            "fetch_url",
+            serde_json::json!({"url": "https://127.0.0.1:9/two"}),
+        )),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.send(id, "fetch two hosts").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::AllowForSession,
+    });
+    h.wait("the other host asks", |e| count_approvals(e) == 2)
+        .await;
+    assert_eq!(
+        h.try_read(id)
+            .unwrap()
+            .effective_tools
+            .capabilities
+            .get("web.fetch"),
+        Some(&crate::session::Permission::Ask),
+        "web.fetch is still Ask"
+    );
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Deny,
+    });
+    h.wait_run_ended(1).await;
 }
 
 // ---- an agent without a folder
