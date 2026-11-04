@@ -2731,6 +2731,147 @@ fn each_listed_tool_shows_its_limit_and_a_click_explains_it() {
     assert_eq!(app.state_mut().view, View::Settings);
 }
 
+/// Opens the Files list and the limits of its first tool (`list_dir`, whose
+/// one option is "Entries per listing", 1 to the Settings value).
+fn open_first_tool_row(app: &mut App, h: &mut Harness, size: (f32, f32)) {
+    open_agent_settings(app, h, size);
+    let head = app.state_mut().chat_ui.probe.tools_heads[0];
+    click(app, h, size, head.center());
+    run(app, h, size, 2);
+    let chip = app.state_mut().chat_ui.probe.tool_limit_chips[0];
+    click(app, h, size, chip.center());
+    run(app, h, size, 2);
+}
+
+/// Presses at `from`, moves to `to` and lets go, one frame each.
+fn drag(app: &mut App, h: &mut Harness, size: (f32, f32), from: Pos2, to: Pos2) {
+    let mut frame = |events: Vec<egui::Event>| {
+        h.frame(vec2(size.0, size.1), events, |ui| app.show(ui));
+    };
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    frame(vec![egui::Event::PointerMoved(from)]);
+    frame(vec![button(from, true)]);
+    frame(vec![egui::Event::PointerMoved(from.lerp(to, 0.5))]);
+    frame(vec![egui::Event::PointerMoved(to)]);
+    frame(vec![button(to, false)]);
+}
+
+/// What the session's stored overrides are, as the window would learn them.
+fn store_override(app: &mut App, s: &Session, key: &str, value: u64) {
+    let mut tools = s.effective_tools.clone();
+    tools.settings.insert(key.into(), serde_json::json!(value));
+    app.state_mut().chat.fold(ChatEvent::AgentSettings {
+        session: s.id,
+        workspace: s.workspace.clone(),
+        step_budget: s.step_budget,
+        tools,
+    });
+}
+
+#[test]
+fn a_tool_row_shows_its_options_and_changing_one_sends_it() {
+    for size in SIZES {
+        let (mut app, sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        open_first_tool_row(&mut app, &mut h, size);
+        let texts = texts_of(&mut app, &mut h, size);
+        assert!(texts.contains("Entries per listing"), "{size:?}: {texts}");
+        assert!(texts.contains("Change in Settings"), "{size:?}: {texts}");
+        let p = app.state_mut().chat_ui.probe.clone();
+        let pop = p.tool_limit_popover.expect("popover");
+        assert_eq!(p.tool_option_values.len(), 1, "{size:?}");
+        assert!(inside(p.tool_option_values[0], pop), "{size:?}");
+        assert!(
+            p.tool_option_resets.is_empty(),
+            "{size:?}: nothing to reset"
+        );
+        let _ = sent_chat_commands(&sent);
+        // Dragging it to the left lowers it; letting go sends it once.
+        let v = p.tool_option_values[0];
+        drag(
+            &mut app,
+            &mut h,
+            size,
+            v.center(),
+            v.center() - vec2(60.0, 0.0),
+        );
+        run(&mut app, &mut h, size, 3);
+        let cmds = sent_chat_commands(&sent);
+        assert!(
+            matches!(cmds.as_slice(), [ChatCommand::SetToolOption { session, tool, option, value: Some(v) }]
+                if *session == s.id && tool == "list_dir" && option == "limit" && (1..200).contains(v)),
+            "{size:?}: {cmds:?}"
+        );
+        // Frames with nothing changing send nothing.
+        run(&mut app, &mut h, size, 5);
+        assert!(sent_chat_commands(&sent).is_empty(), "{size:?}");
+    }
+}
+
+#[test]
+fn reset_clears_the_override() {
+    for size in SIZES {
+        let (mut app, sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        store_override(&mut app, &s, "list_dir.limit", 50);
+        open_first_tool_row(&mut app, &mut h, size);
+        let texts = texts_of(&mut app, &mut h, size);
+        assert!(
+            texts.contains("50"),
+            "{size:?}: shows the stored value: {texts}"
+        );
+        let p = app.state_mut().chat_ui.probe.clone();
+        let pop = p.tool_limit_popover.expect("popover");
+        assert_eq!(p.tool_option_resets.len(), 1, "{size:?}");
+        assert!(inside(p.tool_option_resets[0], pop), "{size:?}");
+        let _ = sent_chat_commands(&sent);
+        click(&mut app, &mut h, size, p.tool_option_resets[0].center());
+        let cmds = sent_chat_commands(&sent);
+        assert!(
+            matches!(cmds.as_slice(), [ChatCommand::SetToolOption { session, tool, option, value: None }]
+                if *session == s.id && tool == "list_dir" && option == "limit"),
+            "{size:?}: {cmds:?}"
+        );
+    }
+}
+
+#[test]
+fn the_option_controls_are_disabled_while_a_run_is_active() {
+    for size in SIZES {
+        let (mut app, sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        store_override(&mut app, &s, "list_dir.limit", 50);
+        open_first_tool_row(&mut app, &mut h, size);
+        app.state_mut().chat.fold(ChatEvent::TurnStarted {
+            session: s.id,
+            turn: TurnId::new(),
+        });
+        run(&mut app, &mut h, size, 3);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let pop = p.tool_limit_popover.expect("popover");
+        assert_eq!(p.tool_option_values.len(), 1, "{size:?}: still listed");
+        assert!(inside(p.tool_option_values[0], pop), "{size:?}");
+        assert!(inside(p.tool_option_resets[0], pop), "{size:?}");
+        let _ = sent_chat_commands(&sent);
+        let v = p.tool_option_values[0];
+        drag(
+            &mut app,
+            &mut h,
+            size,
+            v.center(),
+            v.center() - vec2(60.0, 0.0),
+        );
+        click(&mut app, &mut h, size, p.tool_option_resets[0].center());
+        run(&mut app, &mut h, size, 3);
+        assert!(sent_chat_commands(&sent).is_empty(), "{size:?}");
+    }
+}
+
 #[test]
 fn the_shell_family_lists_run_command_when_commands_are_on() {
     let size = (1180.0, 820.0);

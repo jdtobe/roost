@@ -65,6 +65,11 @@ pub struct ChatUi {
     pub tools_open: std::collections::HashSet<(SessionId, u8)>,
     /// The tool whose limits are shown under its row in the Individual tools list.
     pub limits_open: Option<String>,
+    /// The limits were just opened: scroll them into view once.
+    pub limits_reveal: bool,
+    /// A tool option being dragged or typed: the session, `tool.option` and
+    /// the value so far. It is sent when the control is let go of.
+    pub option_edit: Option<(SessionId, String, u64)>,
     /// A session being renamed in the header, with the text so far.
     pub renaming: Option<(SessionId, String)>,
     pub confirm: Confirm,
@@ -147,6 +152,9 @@ pub struct ChatProbe {
     pub tool_limit_chips: Vec<egui::Rect>,
     pub tool_limit_popover: Option<egui::Rect>,
     pub tool_limit_settings: Option<egui::Rect>,
+    /// The drag value and the Reset button of each option in the open tool row.
+    pub tool_option_values: Vec<egui::Rect>,
+    pub tool_option_resets: Vec<egui::Rect>,
     /// The Confirm and Cancel buttons shown after choosing Allow for Run.
     pub run_confirm: Option<(egui::Rect, egui::Rect)>,
     /// Per change (by id): its row under the tool, its Undo and Show diff buttons.
