@@ -1,6 +1,6 @@
-# A tool registry that agents can configure and that can grow (DRAFT)
+# A tool registry that agents can configure and that can grow
 
-Status: **draft; the open decisions were settled on 2026-11-03 (section 3.5), the rest awaits the user's approval.** Nothing here is built. After review this goes to an implementation plan.
+Status: **approved 2026-11-03; built on branch `feat/tool-registry` (Phase 1: built-in tools).** The open decisions were settled on 2026-11-03 (section 3.5).
 
 ## 1. Intent
 

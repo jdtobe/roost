@@ -30,7 +30,7 @@ pub trait Tool: Send + Sync {
 - `plan`: looks at the arguments before anything runs and returns a `Plan`.
 - `run`: does the work. Returns the text the model reads, or a `ToolError` that the model reads instead; the second value is the `Change` of a write (what Undo uses), `None` for everything else.
 
-`PlanCx` has `workspace: Option<&Workspace>`, `limits` and `questions_asked`. `RunCx` has `workspace: &Workspace`, `limits` and `opts: &Options` (the session's per-tool option values). Read limits from `cx.limits`, as the existing tools do.
+`PlanCx` has `workspace: Option<&Workspace>`, `limits` and `questions_asked`. `RunCx` has `workspace: &Workspace`, `limits` and `opts: &Options` (the call's approval, undo room and cancel flag, not option values). The session's options are already applied in `cx.limits`, so read limits from there, as the existing tools do.
 
 ### `Plan`: what the chat loop does before running
 
@@ -41,7 +41,7 @@ pub trait Tool: Send + Sync {
 
 ### `Scope`: what "Allow for this chat" remembers
 
-- `Scope::Capability`: the whole capability becomes Auto (what `by_capability()` gives).
+- `Scope::Capability`: the whole capability becomes Auto (what `by_capability()` gives). Only read tools (and asking) may plan it: `max_permission` is Auto for every capability, so for a tool that writes, runs commands or uses the network, "Allow for this chat" would raise the whole capability. Those tools use a narrower scope. A registry test (`only_read_tools_and_asking_plan_a_capability_wide_allowance`) enforces this.
 - `Scope::File(path)`: one workspace-relative file.
 - `Scope::CommandPrefix(prefix)`: plain commands starting with that prefix.
 - `Scope::Once`: nothing is remembered; only this call.
@@ -52,7 +52,7 @@ Pick the narrowest scope that is still useful. A new kind of scope means a new v
 ### `Exec`: where a call runs
 
 - `Exec::Blocking`: on the blocking pool, through `run`. Almost every tool.
-- `Exec::Network`: awaited on the network by the chat manager; `run` is not used (`web.rs` returns an error from it). The manager only knows URL fetches today, so a different network tool needs work in `chat/manager.rs`.
+- `Exec::Network`: awaited on the network by the chat loop; `run` is not used (`web.rs` returns an error from it). The loop (`chat/agent_loop.rs`: `start_tool_call`, `fetch_for_agent`) only knows URL fetches today, so a different network tool needs work there.
 
 ### `OptionDecl`: limits the user can lower for one session
 
@@ -102,4 +102,4 @@ Then run the gate: `cargo fmt --all --check && cargo clippy --workspace --all-ta
 
 A plain tool needs nothing: it appears in the tools popover (Individual tools list) and in the "All tools" window, under its family, with its switch, status and options, all built from `tool::all()`.
 
-Only if the tool has limits, add its name to `summary` and `facts` in `crates/roost-gui/src/chat/tool_limits.rs` (the short phrase beside the tool and the full set in the limits popover). A tool missing there shows no summary. Add a line to `CHANGELOG.md` under the Tools section.
+Every registered tool needs an entry in `summary` and `facts` in `crates/roost-gui/src/chat/tool_limits.rs` (the short phrase beside the tool and the full set in the limits popover); the test `every_registered_tool_has_a_summary_and_limits` fails without one. A tool with no limits of its own gets a short line saying so, like `ask_user`. Add a line to `CHANGELOG.md` under the Tools section.

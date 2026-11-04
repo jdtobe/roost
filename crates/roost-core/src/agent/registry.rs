@@ -402,6 +402,37 @@ mod tests {
     }
 
     #[test]
+    fn only_read_tools_and_asking_plan_a_capability_wide_allowance() {
+        use super::super::tool::{Plan, PlanCx, Scope};
+        // "Allow for this chat" on a Capability scope raises the whole
+        // capability to Auto, so nothing that writes, runs commands or uses
+        // the network may plan it.
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let limits = Limits::default();
+        let cx = PlanCx {
+            workspace: Some(&ws),
+            limits: &limits,
+            questions_asked: 0,
+        };
+        let args = json!({
+            "path": "a.txt", "content": "x", "old_text": "a", "new_text": "b",
+            "command": "cargo test", "url": "https://example.com/",
+        });
+        for t in super::super::tool::all() {
+            let spec = t.spec();
+            let readish = spec.capability == Capability::Read || spec.capability == Capability::Ask;
+            if let Plan::Approve {
+                scope: Scope::Capability,
+                ..
+            } = t.plan(&cx, &args)
+            {
+                assert!(readish, "{} plans a capability-wide allowance", spec.name);
+            }
+        }
+    }
+
+    #[test]
     fn every_read_tool_is_listed_once_in_all() {
         let found: Vec<&str> = super::super::tool::all()
             .iter()

@@ -4569,6 +4569,8 @@ fn the_tool_list_shows_every_tool_grouped_by_family() {
     for size in SIZES {
         let (mut app, _sent, s) = agent_fixture();
         let mut h = Harness::new(false);
+        // Commands are listed once Settings allows them.
+        app.state_mut().settings.agents_can_run = true;
         open_tool_list(&mut app, &mut h, size);
         let texts = texts_of(&mut app, &mut h, size);
         let p = app.state_mut().chat_ui.probe.clone();
@@ -4648,16 +4650,15 @@ fn a_tool_row_in_the_list_toggles_the_tool() {
 }
 
 #[test]
-fn a_tool_that_settings_turned_off_says_so_and_its_switch_is_disabled() {
+fn a_write_tool_that_settings_turned_off_says_so_and_its_switch_is_disabled() {
     for size in SIZES {
         let (mut app, sent, _s) = agent_fixture();
         let mut h = Harness::new(false);
-        // Commands are off in Settings by default; writing is turned off here.
         app.state_mut().settings.agents_can_write = false;
         open_tool_list(&mut app, &mut h, size);
         let p = app.state_mut().chat_ui.probe.clone();
         let _ = sent_chat_commands(&sent);
-        for name in ["run_command", "write_file", "edit_file"] {
+        for name in ["write_file", "edit_file"] {
             let (_, tag, usable) = p
                 .tool_list_states
                 .iter()
@@ -4676,6 +4677,48 @@ fn a_tool_that_settings_turned_off_says_so_and_its_switch_is_disabled() {
         click(&mut app, &mut h, size, toggle.center());
         assert_eq!(sent_chat_commands(&sent).len(), 1, "{size:?}");
     }
+}
+
+#[test]
+fn commands_are_hidden_in_the_tool_list_until_settings_allows_them() {
+    for size in SIZES {
+        let (mut app, _sent, _s) = agent_fixture();
+        let mut h = Harness::new(false);
+        assert!(!app.state_mut().settings.agents_can_run);
+        open_tool_list(&mut app, &mut h, size);
+        let p = app.state_mut().chat_ui.probe.clone();
+        assert!(
+            p.tool_list_rows.iter().all(|r| r.0 != "run_command"),
+            "{size:?}"
+        );
+        assert!(p.tool_list_heads.iter().all(|h| h.0 != "Shell"), "{size:?}");
+        app.state_mut().settings.agents_can_run = true;
+        run(&mut app, &mut h, size, 3);
+        let p = app.state_mut().chat_ui.probe.clone();
+        assert!(
+            p.tool_list_rows.iter().any(|r| r.0 == "run_command"),
+            "{size:?}"
+        );
+        assert!(p.tool_list_heads.iter().any(|h| h.0 == "Shell"), "{size:?}");
+    }
+}
+
+#[test]
+fn the_limit_summary_and_facts_show_this_chats_value() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, s) = agent_fixture();
+    let mut h = Harness::new(false);
+    store_override(&mut app, &s, "list_dir.limit", 50);
+    open_first_tool_row(&mut app, &mut h, size);
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(texts.contains("50 entries"), "summary: {texts}");
+    assert!(!texts.contains("200 entries"), "summary: {texts}");
+    let facts = texts
+        .lines()
+        .skip_while(|l| *l != "Entries per call")
+        .nth(1)
+        .unwrap_or_default();
+    assert_eq!(facts, "50", "fact: {texts}");
 }
 
 #[test]

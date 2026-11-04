@@ -31,8 +31,9 @@ fn first_sentence(description: &str) -> String {
 }
 
 /// What the tool can do in this chat: `off` (its switch, its permission, or
-/// Settings), `ask` or `allowed`, and why. A tool Settings turned off reads
-/// `off (Settings)`: its switch does nothing.
+/// Settings), `ask` or `allowed`, and why. A write tool Settings turned off
+/// reads `off (Settings)`: its switch does nothing. (Commands off in Settings
+/// are not listed at all.)
 fn status(app: &AppState, s: &Session, spec: &ToolSpec) -> (&'static str, &'static str) {
     let settings = &app.settings;
     if spec.capability == Capability::Write && !settings.agents_can_write {
@@ -129,6 +130,10 @@ fn list(
     let mut families: Vec<Family> = Vec::new();
     for tool in tool::all() {
         let f = tool.spec().family;
+        // Commands stay out of sight until Settings enables them.
+        if f == Family::Shell && !app.settings.agents_can_run {
+            continue;
+        }
         if !families.contains(&f) {
             families.push(f);
         }

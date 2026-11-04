@@ -1471,7 +1471,7 @@ fn family_card(
                                 on,
                             )));
                         }
-                        tool_limit_chip(ui, app, t, spec.name, was_on);
+                        tool_limit_chip(ui, app, t, &s.effective_tools, spec.name, was_on);
                     });
                     if app.chat_ui.limits_open.as_deref() == Some(spec.name) {
                         tool_limit_panel(ui, app, out, t, s, spec.name, running);
@@ -1484,9 +1484,17 @@ fn family_card(
 
 /// The short limit beside a tool in the list. Clicking it shows or hides all
 /// of that tool's limits under the row.
-fn tool_limit_chip(ui: &mut egui::Ui, app: &mut AppState, t: &Tokens, name: &str, on: bool) {
+fn tool_limit_chip(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    t: &Tokens,
+    config: &EffectiveToolConfig,
+    name: &str,
+    on: bool,
+) {
     use super::tool_limits;
-    let Some(summary) = tool_limits::summary(name, &app.settings.tools) else {
+    let limits = registry::effective_limits(&app.settings.tools, config);
+    let Some(summary) = tool_limits::summary(name, &limits) else {
         return;
     };
     let open = app.chat_ui.limits_open.as_deref() == Some(name);
@@ -1523,6 +1531,7 @@ fn tool_limit_panel(
     running: bool,
 ) {
     use super::tool_limits;
+    let limits = registry::effective_limits(&app.settings.tools, &s.effective_tools);
     let top = ui.cursor().min.y;
     let panel = egui::Frame::new()
         .fill(t.surface2)
@@ -1530,7 +1539,7 @@ fn tool_limit_panel(
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            for (what, value) in tool_limits::facts(name, &app.settings.tools) {
+            for (what, value) in tool_limits::facts(name, &limits) {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(what).size(12.0).color(t.fg2));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

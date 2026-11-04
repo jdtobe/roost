@@ -83,7 +83,7 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 ### Tools
 
-- "All tools…" in the agent's tools menu opens a window that lists every tool by family: what it does, whether it is off, asks or is allowed in this chat ("off (Settings)" when Settings turned writing or commands off, and then its switch is disabled), an on/off switch, its limits, and what the model is told about it.
+- "All tools…" in the agent's tools menu opens a window that lists every tool by family: what it does, whether it is off, asks or is allowed in this chat ("off (Settings)" when Settings turned writing off, and then its switch is disabled; commands are not listed until Settings allows them), an on/off switch, its limits, and what the model is told about it. The limits shown beside each tool are this chat's own values.
 - A tool's limits in the agent's tools list can now be lowered for just that chat: open a tool's limits and drag or type a smaller value (never above the one in Settings), or press Reset to go back to the Settings value.
 - Internally each built-in tool is now one `Tool` implementation registered in one list, so adding a tool is one file; see `docs/ADDING_A_TOOL.md`. The tool definitions sent to the model are unchanged.
 
