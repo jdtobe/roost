@@ -3200,6 +3200,105 @@ async fn allowing_edits_to_a_file_covers_that_file_only_and_does_not_make_writin
 }
 
 #[tokio::test]
+async fn an_unplannable_write_runs_without_asking() {
+    let (_srv, h, id, ws) = asking_agent(vec![
+        chat_route(calls(
+            "edit_file",
+            serde_json::json!({"path": "a.txt", "old_text": "not in it", "new_text": "x"}),
+        )),
+        chat_route(reply("It was not there.")),
+    ])
+    .await;
+    h.send(id, "edit a.txt").await;
+    h.wait_run_ended(1).await;
+    let events = h.events();
+    assert_eq!(count_approvals(&events), 0, "nothing to show, so not asked");
+    assert_eq!(started_tools(&events), 1, "it runs so the model reads why");
+    assert!(events.iter().any(|e| matches!(e, ChatEvent::ToolFinished { ok: false, output, .. } if output.contains("old_text was not found"))));
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join("a.txt")).unwrap(),
+        "hello\nworld\n"
+    );
+}
+
+#[tokio::test]
+async fn allow_for_session_on_a_write_allows_only_that_file() {
+    let (_srv, h, id, ws) = asking_agent(vec![
+        chat_route(calls(
+            "write_file",
+            serde_json::json!({"path": "x.txt", "content": "1\n"}),
+        )),
+        // The other write tool, on the same file: covered too.
+        chat_route(calls(
+            "edit_file",
+            serde_json::json!({"path": "x.txt", "old_text": "1", "new_text": "2"}),
+        )),
+        chat_route(calls(
+            "edit_file",
+            serde_json::json!({"path": "a.txt", "old_text": "hello", "new_text": "bye"}),
+        )),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.send(id, "write x, edit it, then edit a").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::AllowForSession,
+    });
+    h.wait("asked about a.txt", |e| count_approvals(e) == 2)
+        .await;
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join("x.txt")).unwrap(),
+        "2\n"
+    );
+    assert_eq!(
+        preview_of(&h.events()).map(|p| p.path).as_deref(),
+        Some("a.txt")
+    );
+    let (call_id, name) = approval_for(&h.events()).unwrap();
+    assert_eq!(name, "edit_file");
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Deny,
+    });
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join("a.txt")).unwrap(),
+        "hello\nworld\n"
+    );
+    let s = h.try_read(id).unwrap();
+    assert_ne!(
+        s.effective_tools.capabilities.get("files.write"),
+        Some(&crate::session::Permission::Auto),
+        "the file is remembered, not the capability"
+    );
+}
+
+#[tokio::test]
+async fn a_tool_switched_off_while_its_approval_waits_is_refused_on_allow() {
+    let (_srv, h, id, ws) = asking_agent(vec![
+        chat_route(calls(
+            "write_file",
+            serde_json::json!({"path": "late.txt", "content": "x\n"}),
+        )),
+        chat_route(reply("Could not.")),
+    ])
+    .await;
+    h.send(id, "write it").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    // A session's own tools cannot change during a run; the Settings switch can.
+    h.cmd(ChatCommand::SetWritesAllowed(false));
+    allow_next(&h, id);
+    h.wait_run_ended(1).await;
+    assert!(!ws.path().join("late.txt").exists());
+    assert!(h.events().iter().any(|e| matches!(e, ChatEvent::ToolFinished { ok: false, output, .. } if output.contains("turned off"))));
+}
+
+#[tokio::test]
 async fn stopping_while_waiting_for_an_answer_ends_the_run_and_cancels_the_call() {
     let (_srv, h, id, _ws) = asking_agent(vec![chat_route(calls(
         "read_file",
