@@ -419,6 +419,7 @@ impl Manager {
                 })
                 .await;
             }
+            ChatCommand::SetToolOption { .. } => {}
             ChatCommand::ListSessions => self.emit_rows().await,
             ChatCommand::InstalledChanged => self.ctx_cache.clear(),
         }

@@ -1638,6 +1638,100 @@ async fn changing_an_idle_agents_settings_reports_them() {
 }
 
 #[tokio::test]
+async fn setting_a_tool_option_saves_it_and_emits_agent_settings() {
+    let ws = workspace();
+    let srv = fake_agent(vec![]).await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    let set = |value| ChatCommand::SetToolOption {
+        session: id,
+        tool: "read_file".into(),
+        option: "max_lines".into(),
+        value,
+    };
+    h.cmd(set(Some(10)));
+    h.wait("settings", |e| {
+        e.iter().any(|e| {
+            matches!(e, ChatEvent::AgentSettings { tools, .. }
+            if tools.settings.get("read_file.max_lines") == Some(&serde_json::json!(10))
+                && tools.revision == 1)
+        })
+    })
+    .await;
+    h.wait("saved", |_| {
+        std::fs::read_to_string(h.file(id)).is_ok_and(|t| t.contains("read_file.max_lines"))
+    })
+    .await;
+    // Above the Settings ceiling, it is lowered to it.
+    let ceiling = crate::agent::tools::Limits::default().read_max_lines as u64;
+    h.cmd(set(Some(u64::MAX)));
+    h.wait("clamped", |_| {
+        h.try_read(id).is_some_and(|s| {
+            s.effective_tools.settings.get("read_file.max_lines")
+                == Some(&serde_json::json!(ceiling))
+        })
+    })
+    .await;
+    // A tool or option that does not exist is refused, and nothing is stored.
+    h.cmd(ChatCommand::SetToolOption {
+        session: id,
+        tool: "read_file".into(),
+        option: "nope".into(),
+        value: Some(3),
+    });
+    h.wait("refused", |e| {
+        e.iter()
+            .any(|e| matches!(e, ChatEvent::SessionError { session: Some(s), .. } if *s == id))
+    })
+    .await;
+    assert_eq!(h.read(id).effective_tools.settings.len(), 1);
+    // None goes back to the Settings value.
+    h.cmd(set(None));
+    h.wait("cleared", |_| {
+        h.try_read(id)
+            .is_some_and(|s| s.effective_tools.settings.is_empty())
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_call_already_running_keeps_the_limits_it_started_with() {
+    let (_srv, h, id, _ws) = commanding_agent(vec![
+        chat_route(calls(
+            "run_command",
+            serde_json::json!({"command": "head -c 3000 /dev/zero | tr '\\0' x; sleep 0.3"}),
+        )),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.send(id, "go").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Allow,
+    });
+    // The command has started; a tighter limit now applies from the next call.
+    h.cmd(ChatCommand::SetToolOption {
+        session: id,
+        tool: "run_command".into(),
+        option: "output_bytes".into(),
+        value: Some(1),
+    });
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        h.read(id)
+            .effective_tools
+            .settings
+            .get("run_command.output_bytes"),
+        Some(&serde_json::json!(1))
+    );
+    let out = tool_outputs(&h.events()).join("\n");
+    assert!(out.contains(&"x".repeat(3000)), "{out}");
+}
+
+#[tokio::test]
 async fn regenerate_keeps_the_old_reply_as_a_version_and_resends_the_question() {
     let srv = fake(vec![chat_route(reply("one")), chat_route(reply("two"))]).await;
     let h = start(&srv).await;

@@ -314,6 +314,12 @@ fn run(
     tool.run(&cx, args)
 }
 
+/// The limits a session's tools run with: its overrides under the app-wide
+/// ceilings in `base`.
+pub fn effective_limits(base: &Limits, _config: &EffectiveToolConfig) -> Limits {
+    base.clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -670,6 +676,65 @@ mod tests {
             call(&ws, &c, "read_file", &json!({"path": "a.txt"}), &l),
             Err(ToolError::Off(_))
         ));
+    }
+
+    fn with(key: &str, value: Value) -> EffectiveToolConfig {
+        let mut c = cfg();
+        c.settings.insert(key.to_string(), value);
+        c
+    }
+
+    #[test]
+    fn an_override_below_the_ceiling_is_used() {
+        let base = Limits::default();
+        let l = effective_limits(&base, &with("read_file.max_lines", json!(10)));
+        assert_eq!(l.read_max_lines, 10);
+        assert_eq!(l.list_entries, base.list_entries);
+    }
+
+    #[test]
+    fn an_override_above_the_ceiling_is_lowered_to_it() {
+        let base = Limits::default();
+        let l = effective_limits(&base, &with("read_file.max_lines", json!(u64::MAX)));
+        assert_eq!(l.read_max_lines, base.read_max_lines);
+    }
+
+    #[test]
+    fn an_override_of_the_wrong_type_is_ignored() {
+        let base = Limits::default();
+        for v in [json!("10"), json!(-5), json!(1.5), json!(null), json!([3])] {
+            let l = effective_limits(&base, &with("read_file.max_lines", v.clone()));
+            assert_eq!(l, base, "{v}");
+        }
+    }
+
+    #[test]
+    fn an_override_below_the_minimum_is_raised_to_it() {
+        let base = Limits::default();
+        let l = effective_limits(&base, &with("find_files.results", json!(0)));
+        assert_eq!(l.find_results, 1);
+    }
+
+    #[test]
+    fn an_unknown_tool_or_option_is_ignored() {
+        let base = Limits::default();
+        for k in [
+            "nope.limit",
+            "list_dir.nope",
+            "list_dir",
+            "",
+            ".",
+            "ask_user.x",
+        ] {
+            assert_eq!(effective_limits(&base, &with(k, json!(1))), base, "{k}");
+        }
+    }
+
+    #[test]
+    fn the_command_timeout_option_is_in_seconds() {
+        let base = Limits::default();
+        let l = effective_limits(&base, &with("run_command.timeout_secs", json!(5)));
+        assert_eq!(l.run_timeout, std::time::Duration::from_secs(5));
     }
 
     #[test]
