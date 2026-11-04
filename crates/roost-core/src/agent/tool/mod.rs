@@ -68,6 +68,9 @@ pub struct RunCx<'a> {
 }
 
 pub trait Tool: Send + Sync {
+    /// The name the model calls it by; the same as `spec().name`, without
+    /// building the schema.
+    fn name(&self) -> &'static str;
     fn spec(&self) -> ToolSpec;
     /// True when the tool cannot run without a workspace folder.
     fn needs_workspace(&self) -> bool;
@@ -78,5 +81,12 @@ pub trait Tool: Send + Sync {
 
 /// The tools defined through the trait.
 pub fn all() -> &'static [&'static dyn Tool] {
-    &[&files_read::ListDir, &files_read::ReadFile]
+    &[
+        &files_read::ListDir,
+        &files_read::ReadFile,
+        &files_read::ReadBinary,
+        &files_read::FindFiles,
+        &files_read::SearchText,
+        &files_read::SearchBytes,
+    ]
 }

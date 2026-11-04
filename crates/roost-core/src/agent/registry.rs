@@ -2,7 +2,7 @@
 //! permission and tool. The Files family has read tools and write tools.
 
 use super::change;
-use super::tools::{self, Limits};
+use super::tools::Limits;
 use super::workspace::{ToolError, Workspace};
 use crate::session::{EffectiveToolConfig, Permission};
 use serde_json::{json, Value};
@@ -134,13 +134,6 @@ pub fn default_permission(_family: Family, capability: Capability) -> Permission
 
 /// The built-in tools.
 pub fn specs() -> Vec<ToolSpec> {
-    let read = |name, description, parameters| ToolSpec {
-        name,
-        family: Family::Files,
-        capability: Capability::Read,
-        description,
-        parameters,
-    };
     let write = |name, description, parameters| ToolSpec {
         name,
         family: Family::Files,
@@ -158,65 +151,6 @@ pub fn specs() -> Vec<ToolSpec> {
     let mut specs: Vec<ToolSpec> = super::tool::all().iter().map(|t| t.spec()).collect();
     // Not yet defined through the `Tool` trait.
     specs.extend([
-        read(
-            "read_binary",
-            "Show the bytes of any file (a ROM, an image, an archive …) as a hex dump: offset, 16 bytes in hex, and the same bytes as text. Returns a limited number of bytes per call and says which offset to use to continue. Offsets may be written as 4096 or 0x1000. Use this when read_file says a file is binary.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "File relative to the workspace root."},
-                    "offset": {"type": "integer", "description": "First byte to show, counting from 0. Defaults to 0."},
-                    "length": {"type": "integer", "description": "How many bytes to show (default 256, at most 4096)."}
-                },
-                "required": ["path"]
-            }),
-        ),
-        read(
-            "find_files",
-            "Find files and directories whose path matches a glob such as *.rs or src/*.toml. A pattern without a slash matches at any depth. Results can be sorted by size or time (to find the largest or newest files). Many results are cut, and the result says which offset to use to see the next ones.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string", "description": "Glob pattern."},
-                    "path": {"type": "string", "description": "Directory to search in. Defaults to the workspace root."},
-                    "offset": {"type": "integer", "description": "Results to skip, to continue a cut list. Defaults to 0."},
-                    "limit": {"type": "integer", "description": "Return at most this many (never more than the user allows). Ask for fewer when a few will do."},
-                    "sort": {"type": "string", "enum": ["name", "size", "modified"], "description": "Order: name (default), size (largest first) or modified (newest first)."},
-                    "reverse": {"type": "boolean", "description": "Flip the order."}
-                },
-                "required": ["pattern"]
-            }),
-        ),
-        read(
-            "search_text",
-            "Search text files for a regular expression. Returns path:line: text for each match. Many matches are cut, and the result says which offset to use to see the next ones and which files could not be searched (binary files, files too large).",
-            json!({
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string", "description": "Regular expression."},
-                    "path": {"type": "string", "description": "File or directory to search. Defaults to the workspace root."},
-                    "case_insensitive": {"type": "boolean", "description": "Ignore letter case."},
-                    "offset": {"type": "integer", "description": "Matches to skip, to continue a cut list. Defaults to 0."},
-                    "limit": {"type": "integer", "description": "Return at most this many (never more than the user allows). Ask for fewer when a few will do."}
-                },
-                "required": ["pattern"]
-            }),
-        ),
-        read(
-            "search_bytes",
-            "Search files for a byte pattern, such as a ROM header or a file signature. The pattern is hex pairs, with ?? for any byte: \"4E 45 53 1A\" or \"de ?? be ef\". Returns path:0xOFFSET: bytes for each match. Use read_binary to look around an offset. Many matches are cut, and the result says which offset to use to see the next ones.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string", "description": "Hex byte pairs, ?? for any byte. Up to 64 bytes."},
-                    "path": {"type": "string", "description": "File or directory to search. Defaults to the workspace root."},
-                    "glob": {"type": "string", "description": "Only search files whose name matches, such as *.nes."},
-                    "offset": {"type": "integer", "description": "Matches to skip, to continue a cut list. Defaults to 0."},
-                    "limit": {"type": "integer", "description": "Return at most this many (never more than the user allows). Ask for fewer when a few will do."}
-                },
-                "required": ["pattern"]
-            }),
-        ),
         write(
             "write_file",
             "Create a file, or replace a whole file, in the workspace with the given text. Folders are made as needed. Prefer edit_file for a small change to an existing file. The user may be asked to approve the change.",
@@ -444,7 +378,7 @@ fn run(
             None,
         );
     }
-    if let Some(tool) = super::tool::all().iter().find(|t| t.spec().name == name) {
+    if let Some(tool) = super::tool::all().iter().find(|t| t.name() == name) {
         let cx = super::tool::RunCx {
             workspace: ws,
             limits,
@@ -453,10 +387,6 @@ fn run(
         return tool.run(&cx, args);
     }
     match name {
-        "read_binary" => (tools::read_binary(ws, args, limits), None),
-        "find_files" => (tools::find_files(ws, args, limits), None),
-        "search_text" => (tools::search_text(ws, args, limits), None),
-        "search_bytes" => (tools::search_bytes(ws, args, limits), None),
         "write_file" | "edit_file" => write(ws, name, args, undo_room, limits),
         "run_command" => (run_command(ws, args, limits, cancel), None),
         // Fetched by the chat manager, which can wait for the network.
@@ -570,6 +500,7 @@ mod tests {
         for t in tools {
             let spec = t.spec();
             assert!(seen.insert(spec.name), "{} is registered twice", spec.name);
+            assert_eq!(t.name(), spec.name, "name() disagrees with spec().name");
             assert!(
                 !spec.description.is_empty(),
                 "{} has no description",
