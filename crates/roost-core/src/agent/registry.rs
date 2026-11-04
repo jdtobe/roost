@@ -2,7 +2,7 @@
 //! permission and tool. The Files family has read tools and write tools.
 
 use super::change;
-use super::tools::{self, Limits};
+use super::tools::Limits;
 use super::workspace::{ToolError, Workspace};
 use crate::session::{EffectiveToolConfig, Permission};
 use serde_json::{json, Value};
@@ -134,165 +134,7 @@ pub fn default_permission(_family: Family, capability: Capability) -> Permission
 
 /// The built-in tools.
 pub fn specs() -> Vec<ToolSpec> {
-    let read = |name, description, parameters| ToolSpec {
-        name,
-        family: Family::Files,
-        capability: Capability::Read,
-        description,
-        parameters,
-    };
-    let write = |name, description, parameters| ToolSpec {
-        name,
-        family: Family::Files,
-        capability: Capability::Write,
-        description,
-        parameters,
-    };
-    let run = |name, description, parameters| ToolSpec {
-        name,
-        family: Family::Shell,
-        capability: Capability::Run,
-        description,
-        parameters,
-    };
-    vec![
-        read(
-            "list_dir",
-            "List the entries of a directory in the workspace, by name or sorted by size or time. Directories end with /. A long listing is cut, and the result says which offset to use to see the rest.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Directory relative to the workspace root. Defaults to the root."},
-                    "offset": {"type": "integer", "description": "Entries to skip, to continue a cut listing. Defaults to 0."},
-                    "limit": {"type": "integer", "description": "Return at most this many (never more than the user allows). Ask for fewer when a few will do."},
-                    "sort": {"type": "string", "enum": ["name", "size", "modified"], "description": "Order: name (default), size (largest first) or modified (newest first)."},
-                    "reverse": {"type": "boolean", "description": "Flip the order."}
-                }
-            }),
-        ),
-        read(
-            "read_file",
-            "Read a text file from the workspace, with line numbers. Long files are cut, and the result says which offset to use to continue.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "File relative to the workspace root."},
-                    "offset": {"type": "integer", "description": "First line to return, starting at 1."},
-                    "limit": {"type": "integer", "description": "Number of lines to return."}
-                },
-                "required": ["path"]
-            }),
-        ),
-        read(
-            "read_binary",
-            "Show the bytes of any file (a ROM, an image, an archive …) as a hex dump: offset, 16 bytes in hex, and the same bytes as text. Returns a limited number of bytes per call and says which offset to use to continue. Offsets may be written as 4096 or 0x1000. Use this when read_file says a file is binary.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "File relative to the workspace root."},
-                    "offset": {"type": "integer", "description": "First byte to show, counting from 0. Defaults to 0."},
-                    "length": {"type": "integer", "description": "How many bytes to show (default 256, at most 4096)."}
-                },
-                "required": ["path"]
-            }),
-        ),
-        read(
-            "find_files",
-            "Find files and directories whose path matches a glob such as *.rs or src/*.toml. A pattern without a slash matches at any depth. Results can be sorted by size or time (to find the largest or newest files). Many results are cut, and the result says which offset to use to see the next ones.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string", "description": "Glob pattern."},
-                    "path": {"type": "string", "description": "Directory to search in. Defaults to the workspace root."},
-                    "offset": {"type": "integer", "description": "Results to skip, to continue a cut list. Defaults to 0."},
-                    "limit": {"type": "integer", "description": "Return at most this many (never more than the user allows). Ask for fewer when a few will do."},
-                    "sort": {"type": "string", "enum": ["name", "size", "modified"], "description": "Order: name (default), size (largest first) or modified (newest first)."},
-                    "reverse": {"type": "boolean", "description": "Flip the order."}
-                },
-                "required": ["pattern"]
-            }),
-        ),
-        read(
-            "search_text",
-            "Search text files for a regular expression. Returns path:line: text for each match. Many matches are cut, and the result says which offset to use to see the next ones and which files could not be searched (binary files, files too large).",
-            json!({
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string", "description": "Regular expression."},
-                    "path": {"type": "string", "description": "File or directory to search. Defaults to the workspace root."},
-                    "case_insensitive": {"type": "boolean", "description": "Ignore letter case."},
-                    "offset": {"type": "integer", "description": "Matches to skip, to continue a cut list. Defaults to 0."},
-                    "limit": {"type": "integer", "description": "Return at most this many (never more than the user allows). Ask for fewer when a few will do."}
-                },
-                "required": ["pattern"]
-            }),
-        ),
-        read(
-            "search_bytes",
-            "Search files for a byte pattern, such as a ROM header or a file signature. The pattern is hex pairs, with ?? for any byte: \"4E 45 53 1A\" or \"de ?? be ef\". Returns path:0xOFFSET: bytes for each match. Use read_binary to look around an offset. Many matches are cut, and the result says which offset to use to see the next ones.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string", "description": "Hex byte pairs, ?? for any byte. Up to 64 bytes."},
-                    "path": {"type": "string", "description": "File or directory to search. Defaults to the workspace root."},
-                    "glob": {"type": "string", "description": "Only search files whose name matches, such as *.nes."},
-                    "offset": {"type": "integer", "description": "Matches to skip, to continue a cut list. Defaults to 0."},
-                    "limit": {"type": "integer", "description": "Return at most this many (never more than the user allows). Ask for fewer when a few will do."}
-                },
-                "required": ["pattern"]
-            }),
-        ),
-        write(
-            "write_file",
-            "Create a file, or replace a whole file, in the workspace with the given text. Folders are made as needed. Prefer edit_file for a small change to an existing file. The user may be asked to approve the change.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "File relative to the workspace root."},
-                    "content": {"type": "string", "description": "The complete new text of the file."}
-                },
-                "required": ["path", "content"]
-            }),
-        ),
-        write(
-            "edit_file",
-            "Change part of an existing file: replace old_text, which must appear exactly once, with new_text. Read the file first and copy old_text exactly, with enough surrounding lines to be unique. The user may be asked to approve the change.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "File relative to the workspace root."},
-                    "old_text": {"type": "string", "description": "The exact text to replace; it must occur once."},
-                    "new_text": {"type": "string", "description": "What to put there instead (may be empty to delete)."}
-                },
-                "required": ["path", "old_text", "new_text"]
-            }),
-        ),
-        run(
-            "run_command",
-            "Run a shell command on the user's computer, starting in the workspace folder, and return its exit code and output. It runs as the user and is not limited to the workspace. It stops after 2 minutes and only the first 20 KB of output is kept. The user is asked before it runs. Prefer the file tools for reading and changing files.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "The command line, as typed in a terminal."}
-                },
-                "required": ["command"]
-            }),
-        ),
-        ToolSpec {
-            name: super::ask::TOOL,
-            family: Family::Ask,
-            capability: Capability::Ask,
-            description: super::ask::description(),
-            parameters: super::ask::parameters(),
-        },
-        ToolSpec {
-            name: super::web::TOOL,
-            family: Family::Web,
-            capability: Capability::Fetch,
-            description: super::web::description(),
-            parameters: super::web::parameters(),
-        },
-    ]
+    super::tool::all().iter().map(|t| t.spec()).collect()
 }
 
 /// The permission a spec currently has in a session's configuration. A
@@ -349,10 +191,7 @@ pub fn needs_approval(config: &EffectiveToolConfig, name: &str) -> bool {
 /// True when a tool works inside the agent's working directory, so a call
 /// has to wait until one is attached. Questions and web fetches do not.
 pub fn needs_workspace(name: &str) -> bool {
-    specs()
-        .iter()
-        .find(|s| s.name == name)
-        .is_some_and(|s| matches!(s.family, Family::Files | Family::Shell))
+    super::tool::find(name).is_some_and(|t| t.needs_workspace())
 }
 
 /// The settings key of the capability a tool belongs to (for "allow for this
@@ -447,12 +286,11 @@ fn run(
     limits: &Limits,
     opts: &Options,
 ) -> (Result<String, ToolError>, Option<change::Change>) {
-    let (approved, undo_room, cancel) = (opts.approved, opts.undo_room, opts.cancel);
-    let spec = match specs().into_iter().find(|s| s.name == name) {
-        Some(s) => s,
-        None => return (Err(ToolError::UnknownTool(name.to_string())), None),
+    let approved = opts.approved;
+    let Some(tool) = super::tool::find(name) else {
+        return (Err(ToolError::UnknownTool(name.to_string())), None);
     };
-    match check(config, &spec) {
+    match check(config, &tool.spec()) {
         Err(ToolError::NeedsApproval(_)) if approved => {}
         Err(e) => return (Err(e), None),
         Ok(()) => {}
@@ -468,77 +306,42 @@ fn run(
             None,
         );
     }
-    match name {
-        "list_dir" => (tools::list_dir(ws, args, limits), None),
-        "read_file" => (tools::read_file(ws, args, limits), None),
-        "read_binary" => (tools::read_binary(ws, args, limits), None),
-        "find_files" => (tools::find_files(ws, args, limits), None),
-        "search_text" => (tools::search_text(ws, args, limits), None),
-        "search_bytes" => (tools::search_bytes(ws, args, limits), None),
-        "write_file" | "edit_file" => write(ws, name, args, undo_room, limits),
-        "run_command" => (run_command(ws, args, limits, cancel), None),
-        // Fetched by the chat manager, which can wait for the network.
-        super::web::TOOL => (
-            Err(ToolError::InvalidArguments(
-                "this tool is handled by the app, not run here".into(),
-            )),
-            None,
-        ),
-        // Asked through the chat manager, which waits for the user.
-        super::ask::TOOL => (
-            Err(ToolError::InvalidArguments(
-                "this tool is handled by the app, not run here".into(),
-            )),
-            None,
-        ),
-        other => (Err(ToolError::UnknownTool(other.to_string())), None),
-    }
+    let cx = super::tool::RunCx {
+        workspace: ws,
+        limits,
+        opts,
+    };
+    tool.run(&cx, args)
 }
 
-/// Runs `command` from the arguments in the workspace folder.
-fn run_command(
-    ws: &Workspace,
-    args: &Value,
-    limits: &Limits,
-    cancel: &AtomicBool,
-) -> Result<String, ToolError> {
-    let Some(Value::String(command)) = args.get("command") else {
-        return Err(ToolError::InvalidArguments(
-            "command is required and must be a string".into(),
-        ));
-    };
-    super::command::run(ws.root(), command, limits, cancel)
-}
-
-/// Plans a write, checks the original can be kept, then applies it.
-fn write(
-    ws: &Workspace,
-    name: &str,
-    args: &Value,
-    undo_room: usize,
-    limits: &Limits,
-) -> (Result<String, ToolError>, Option<change::Change>) {
-    let change = match change::plan(ws, name, args, limits) {
-        Ok(Some(c)) => c,
-        Ok(None) => return (Err(ToolError::UnknownTool(name.to_string())), None),
-        Err(e) => return (Err(e), None),
-    };
-    let needed = change.before.as_ref().map_or(0, String::len);
-    if needed > undo_room {
-        return (
-            Err(ToolError::InvalidArguments(
-                "this session cannot keep another copy for undo; nothing was changed. Ask the user to undo or start a new session".into(),
-            )),
-            None,
-        );
+/// The limits a session's tools run with: its overrides under the app-wide
+/// ceilings in `base`. An override that is not a non-negative whole number,
+/// or names no declared option, is ignored; one outside `min..=ceiling` is
+/// moved to the nearest end.
+pub fn effective_limits(base: &Limits, config: &EffectiveToolConfig) -> Limits {
+    let mut limits = base.clone();
+    let mut changed = false;
+    for (key, value) in &config.settings {
+        let Some(value) = value.as_u64() else {
+            continue;
+        };
+        let Some((tool, option)) = key.split_once('.') else {
+            continue;
+        };
+        let Some(decl) =
+            super::tool::find(tool).and_then(|t| t.options().iter().find(|o| o.key == option))
+        else {
+            continue;
+        };
+        let ceiling = (decl.get)(base);
+        (decl.set)(&mut limits, value.clamp(decl.min, ceiling.max(decl.min)));
+        changed = true;
     }
-    match change::apply(ws, &change) {
-        Ok(msg) => {
-            let kept = (change.before.as_deref() != Some(change.after.as_str())).then_some(change);
-            (Ok(msg), kept)
-        }
-        Err(e) => (Err(e), None),
+    if changed {
+        // A lowered maximum also lowers the default, as in `Limits::clamped`.
+        limits.read_default_lines = limits.read_default_lines.min(limits.read_max_lines);
     }
+    limits
 }
 
 #[cfg(test)]
@@ -552,6 +355,99 @@ mod tests {
 
     fn names(v: &[ToolSpec]) -> Vec<&'static str> {
         v.iter().map(|s| s.name).collect()
+    }
+
+    #[test]
+    fn the_tool_definitions_sent_to_the_model_have_not_changed() {
+        // Every tool on, every capability automatic.
+        let mut config = cfg();
+        for s in specs() {
+            config
+                .capabilities
+                .insert(capability_key(s.family, s.capability), Permission::Auto);
+        }
+        let mut text = serde_json::to_string_pretty(&ollama_definitions(&config)).unwrap();
+        text.push('\n');
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/golden/tool_definitions.json"
+        );
+        if std::env::var_os("UPDATE_GOLDEN").is_some() {
+            std::fs::create_dir_all(std::path::Path::new(path).parent().unwrap()).unwrap();
+            std::fs::write(path, &text).unwrap();
+        }
+        let golden = std::fs::read_to_string(path).expect("golden file; run with UPDATE_GOLDEN=1");
+        assert_eq!(text, golden);
+    }
+
+    #[test]
+    fn every_registered_tool_has_a_unique_name_a_description_and_an_object_schema() {
+        let tools = super::super::tool::all();
+        let found: Vec<&str> = tools.iter().map(|t| t.spec().name).collect();
+        for expected in ["list_dir", "read_file"] {
+            assert!(found.contains(&expected), "{expected} is not registered");
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for t in tools {
+            let spec = t.spec();
+            assert!(seen.insert(spec.name), "{} is registered twice", spec.name);
+            assert_eq!(t.name(), spec.name, "name() disagrees with spec().name");
+            assert!(
+                !spec.description.is_empty(),
+                "{} has no description",
+                spec.name
+            );
+            assert_eq!(spec.parameters["type"], "object", "{}", spec.name);
+        }
+    }
+
+    #[test]
+    fn only_read_tools_and_asking_plan_a_capability_wide_allowance() {
+        use super::super::tool::{Plan, PlanCx, Scope};
+        // "Allow for this chat" on a Capability scope raises the whole
+        // capability to Auto, so nothing that writes, runs commands or uses
+        // the network may plan it.
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let limits = Limits::default();
+        let cx = PlanCx {
+            workspace: Some(&ws),
+            limits: &limits,
+            questions_asked: 0,
+        };
+        let args = json!({
+            "path": "a.txt", "content": "x", "old_text": "a", "new_text": "b",
+            "command": "cargo test", "url": "https://example.com/",
+        });
+        for t in super::super::tool::all() {
+            let spec = t.spec();
+            let readish = spec.capability == Capability::Read || spec.capability == Capability::Ask;
+            if let Plan::Approve {
+                scope: Scope::Capability,
+                ..
+            } = t.plan(&cx, &args)
+            {
+                assert!(readish, "{} plans a capability-wide allowance", spec.name);
+            }
+        }
+    }
+
+    #[test]
+    fn every_read_tool_is_listed_once_in_all() {
+        let found: Vec<&str> = super::super::tool::all()
+            .iter()
+            .map(|t| t.spec().name)
+            .collect();
+        let listed = names(&specs());
+        for expected in ["read_binary", "find_files", "search_text", "search_bytes"] {
+            assert!(found.contains(&expected), "{expected} is not in all()");
+            // Once in all(), so the fallback list in specs() must not hold it too.
+            assert_eq!(
+                listed.iter().filter(|n| **n == expected).count(),
+                1,
+                "{expected} is listed more than once"
+            );
+        }
     }
 
     #[test]
@@ -835,6 +731,106 @@ mod tests {
             call(&ws, &c, "read_file", &json!({"path": "a.txt"}), &l),
             Err(ToolError::Off(_))
         ));
+    }
+
+    fn with(key: &str, value: Value) -> EffectiveToolConfig {
+        let mut c = cfg();
+        c.settings.insert(key.to_string(), value);
+        c
+    }
+
+    #[test]
+    fn an_override_below_the_ceiling_is_used() {
+        let base = Limits::default();
+        let l = effective_limits(&base, &with("read_file.max_lines", json!(10)));
+        assert_eq!(l.read_max_lines, 10);
+        assert_eq!(l.list_entries, base.list_entries);
+    }
+
+    #[test]
+    fn an_override_above_the_ceiling_is_lowered_to_it() {
+        let base = Limits::default();
+        let l = effective_limits(&base, &with("read_file.max_lines", json!(u64::MAX)));
+        assert_eq!(l.read_max_lines, base.read_max_lines);
+    }
+
+    #[test]
+    fn an_override_of_the_wrong_type_is_ignored() {
+        let base = Limits::default();
+        for v in [json!("10"), json!(-5), json!(1.5), json!(null), json!([3])] {
+            let l = effective_limits(&base, &with("read_file.max_lines", v.clone()));
+            assert_eq!(l, base, "{v}");
+        }
+    }
+
+    #[test]
+    fn an_override_below_the_minimum_is_raised_to_it() {
+        let base = Limits::default();
+        let l = effective_limits(&base, &with("find_files.results", json!(0)));
+        assert_eq!(l.find_results, 1);
+    }
+
+    #[test]
+    fn an_unknown_tool_or_option_is_ignored() {
+        let base = Limits::default();
+        for k in [
+            "nope.limit",
+            "list_dir.nope",
+            "list_dir",
+            "",
+            ".",
+            "ask_user.x",
+        ] {
+            assert_eq!(effective_limits(&base, &with(k, json!(1))), base, "{k}");
+        }
+    }
+
+    #[test]
+    fn a_lowered_maximum_also_lowers_the_default_lines() {
+        let base = Limits::default();
+        let l = effective_limits(&base, &with("read_file.max_lines", json!(50)));
+        assert_eq!(l.read_max_lines, 50);
+        assert_eq!(l.read_default_lines, 50);
+        assert!(base.read_default_lines > 50);
+    }
+
+    #[test]
+    fn the_command_output_cannot_go_below_the_floor_settings_keeps() {
+        let base = Limits::default();
+        let l = effective_limits(&base, &with("run_command.output_bytes", json!(1)));
+        assert_eq!(l.run_output_bytes, 1024);
+    }
+
+    #[test]
+    fn every_option_changes_its_own_limit_and_nothing_else() {
+        let base = Limits::default();
+        let decls: Vec<(String, &crate::agent::tool::OptionDecl)> = crate::agent::tool::all()
+            .iter()
+            .flat_map(|t| {
+                t.options()
+                    .iter()
+                    .map(move |o| (format!("{}.{}", t.name(), o.key), o))
+            })
+            .collect();
+        assert_eq!(decls.len(), 8);
+        for (key, decl) in &decls {
+            let l = effective_limits(&base, &with(key, json!(decl.min)));
+            assert_eq!((decl.get)(&l), decl.min, "{key}");
+            for (other, o) in &decls {
+                // Lowering the most lines also lowers the default.
+                let follows = key == "read_file.max_lines" && other == "read_file.default_lines";
+                if other != key && !follows {
+                    assert_eq!((o.get)(&l), (o.get)(&base), "{key} changed {other}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_command_timeout_option_is_in_seconds() {
+        let base = Limits::default();
+        let l = effective_limits(&base, &with("run_command.timeout_secs", json!(5)));
+        assert_eq!(l.run_timeout, std::time::Duration::from_secs(5));
     }
 
     #[test]

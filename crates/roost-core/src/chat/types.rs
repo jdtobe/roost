@@ -49,6 +49,16 @@ pub enum ChatCommand {
     /// Undoes every change, newest first, stopping at one that cannot be.
     UndoAll(SessionId),
     SetCapability(SessionId, String, Permission),
+    /// Lowers one tool limit for a session (never above the Settings
+    /// ceiling); `None` goes back to the Settings value. Accepted during a run,
+    /// where it applies from the next tool call; the GUI disables its controls
+    /// during a run.
+    SetToolOption {
+        session: SessionId,
+        tool: String,
+        option: String,
+        value: Option<u64>,
+    },
     Rename(SessionId, String),
     SetPinned(SessionId, bool),
     /// Deletes a session. A saved one is kept out of sight in the store's

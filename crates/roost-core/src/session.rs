@@ -185,6 +185,9 @@ pub struct EffectiveToolConfig {
     pub revision: u32,
     pub capabilities: BTreeMap<String, Permission>,
     pub tools: BTreeMap<String, bool>,
+    /// Per-tool limits lowered for this session, keyed `tool.option`
+    /// (`read_file.max_lines`). The values are checked when they are used.
+    pub settings: BTreeMap<String, serde_json::Value>,
 }
 
 /// Where a branch was forked from.
@@ -904,6 +907,20 @@ impl Session {
         }
     }
 
+    /// Sets (or, with `None`, clears) one tool option for this session. The
+    /// caller has checked that the option exists and is in range.
+    pub fn set_tool_option(&mut self, tool: &str, option: &str, value: Option<u64>) {
+        let key = format!("{tool}.{option}");
+        let value = value.map(serde_json::Value::from);
+        if self.effective_tools.settings.get(&key) != value.as_ref() {
+            match value {
+                Some(v) => self.effective_tools.settings.insert(key, v),
+                None => self.effective_tools.settings.remove(&key),
+            };
+            self.effective_tools.revision += 1;
+        }
+    }
+
     pub fn append_assistant(&mut self, id: MessageId, content: &str, thinking: &str) {
         let Some(m) = self.messages.iter_mut().find(|m| m.id == id) else {
             return;
@@ -1195,6 +1212,7 @@ mod tests {
                 ("find_files".to_string(), false),
             ]
             .into(),
+            settings: [("read_file.max_lines".to_string(), serde_json::json!(50))].into(),
         };
         s.parent = Some(BranchOrigin {
             session_id: SessionId::new(),
@@ -1587,6 +1605,18 @@ mod tests {
         v.as_object_mut().unwrap().remove("changes");
         let old: Session = serde_json::from_value(v).unwrap();
         assert!(old.changes.is_empty());
+    }
+
+    #[test]
+    fn a_session_file_without_settings_loads_with_none() {
+        let s = Session::new_chat("m", SessionLifetime::Persisted, 1_000);
+        let mut v: serde_json::Value = serde_json::to_value(&s).unwrap();
+        v["effective_tools"]
+            .as_object_mut()
+            .unwrap()
+            .remove("settings");
+        let old: Session = serde_json::from_value(v).unwrap();
+        assert!(old.effective_tools.settings.is_empty());
     }
 
     #[test]

@@ -13,6 +13,7 @@ use crate::agent::ask;
 use crate::agent::change::{self, ChangePreview};
 use crate::agent::command::{self, RunPreview};
 use crate::agent::registry;
+use crate::agent::tool::{self, Exec, Plan, PlanCx, Scope};
 use crate::agent::tools::Limits;
 use crate::agent::web;
 use crate::agent::{ToolError, Workspace};
@@ -56,6 +57,17 @@ pub(super) struct AgentRun {
 }
 
 impl AgentRun {
+    /// What the tool called `name` says must happen before the call runs;
+    /// `None` when there is no such tool.
+    pub(super) fn plan(&self, name: &str, arguments: &Value, lim: &Limits) -> Option<Plan> {
+        let cx = PlanCx {
+            workspace: self.workspace.as_deref(),
+            limits: lim,
+            questions_asked: self.asked,
+        };
+        Some(tool::find(name)?.plan(&cx, arguments))
+    }
+
     /// What a write call would change, if `name` is a write tool and the call
     /// makes sense.
     pub(super) fn preview(
@@ -64,30 +76,23 @@ impl AgentRun {
         arguments: &Value,
         lim: &Limits,
     ) -> Option<ChangePreview> {
-        change::plan(self.workspace.as_deref()?, name, arguments, lim)
-            .ok()
-            .flatten()
-            .map(|c| c.card())
+        match self.plan(name, arguments, lim)? {
+            Plan::Approve { preview, .. } => preview,
+            _ => None,
+        }
     }
 
-    /// What a command call would run and where, if `name` is the command tool.
+    /// What a command call would run and where, if the tool plans one.
     pub(super) fn run_preview(
         &self,
         name: &str,
         arguments: &Value,
         lim: &Limits,
     ) -> Option<RunPreview> {
-        if name != "run_command" {
-            return None;
+        match self.plan(name, arguments, lim)? {
+            Plan::Approve { run, .. } => run,
+            _ => None,
         }
-        let command = arguments.get("command")?.as_str()?.trim().to_string();
-        Some(RunPreview {
-            prefix: command::allow_prefix(&command),
-            command,
-            folder: self.workspace.as_deref()?.root().to_path_buf(),
-            timeout_secs: lim.run_timeout.as_secs(),
-            output_kb: lim.run_output_bytes / 1024,
-        })
     }
 
     /// Whether a working directory is attached.
@@ -108,6 +113,8 @@ pub(super) struct ToolRun {
     msg: MessageId,
     /// The call, while it waits for approval.
     waiting: Option<PendingCall>,
+    /// The waiting call is a question for the user, not an approval.
+    question: bool,
     /// Set to end a running command; a blocking task cannot be aborted.
     pub(super) cancel: Arc<AtomicBool>,
 }
@@ -499,50 +506,61 @@ impl Manager {
             self.agent_next(id).await;
             return;
         };
-        if call.name == ask::TOOL {
-            self.ask_question(id, call);
-            return;
-        }
         if !agent.has_workspace() && registry::needs_workspace(&call.name) {
             self.need_workspace(id, call);
             return;
         }
         let config = gated(&live.s.effective_tools, writes, runs);
+        let plan = match agent.plan(&call.name, &call.arguments, &lim) {
+            Some(Plan::Question) => {
+                self.ask_question(id, call);
+                return;
+            }
+            Some(Plan::Refuse(e)) => {
+                // A tool that is off says so first, as it would if it ran.
+                let e = registry::authorize(&config, &call.name, true)
+                    .err()
+                    .unwrap_or(e);
+                self.refuse(id, call, e);
+                return;
+            }
+            plan => plan,
+        };
         let mut ask = registry::needs_approval(&config, &call.name);
-        let preview = agent.preview(&call.name, &call.arguments, &lim);
-        if ask && registry::capability_of(&call.name).as_deref() == Some("files.write") {
-            match &preview {
-                // The user allowed edits to this file for the session.
-                Some(p) if live.allowed_files.contains(&p.path) => ask = false,
+        if ask {
+            match &plan {
                 // A call that cannot be planned changes nothing; running it
                 // lets the model read why.
-                None => ask = false,
-                Some(_) => {}
+                Some(Plan::Run) => ask = false,
+                // The user allowed edits to this file for the session.
+                Some(Plan::Approve {
+                    scope: Scope::File(path),
+                    ..
+                }) if live.allowed_files.contains(path) => ask = false,
+                // An allowed prefix covers a plain command that starts with
+                // it and nothing chained to it.
+                Some(Plan::Approve {
+                    scope: Scope::CommandPrefix(own),
+                    ..
+                }) if live
+                    .allowed_prefixes
+                    .iter()
+                    .any(|p| command::covered_by(own, p)) =>
+                {
+                    ask = false
+                }
+                // The user allowed this web host for the session.
+                Some(Plan::Approve {
+                    scope: Scope::Host(host),
+                    ..
+                }) if live.allowed_hosts.contains(host) => ask = false,
+                _ => {}
             }
         }
-        let run = agent.run_preview(&call.name, &call.arguments, &lim);
-        if ask && call.name == "run_command" {
-            // An allowed prefix covers a plain command that starts with it and
-            // nothing chained to it; a call without a command runs to fail.
-            let covered = live.allowed_prefixes.iter().any(|p| {
-                call.arguments
-                    .get("command")
-                    .and_then(Value::as_str)
-                    .is_some_and(|c| command::covered_by(c, p))
-            });
-            if covered || run.is_none() {
-                ask = false;
-            }
-        }
-        if ask && call.name == web::TOOL {
-            // An allowed host is fetched without asking, and a call without a
-            // usable address runs to fail so the model can read why.
-            match web::host_of(&call.arguments) {
-                Some(host) if live.allowed_hosts.contains(&host) => ask = false,
-                None => ask = false,
-                Some(_) => {}
-            }
-        }
+        let (preview, run) = match plan {
+            Some(Plan::Approve { preview, run, .. }) => (preview, run),
+            _ => (None, None),
+        };
         if ask {
             // Ask the user first; the run waits in this slot.
             live.slot = Slot::Tools(Box::new(ToolRun {
@@ -550,6 +568,7 @@ impl Manager {
                 call_id: call.call_id.clone(),
                 msg: call.msg,
                 waiting: Some(call.clone()),
+                question: false,
                 cancel: Arc::new(AtomicBool::new(false)),
             }));
             self.emit(ChatEvent::ApprovalRequested {
@@ -566,17 +585,16 @@ impl Manager {
         self.start_tool_call(id, call, approved);
     }
 
-    /// The tool limits for this chat's model: the Settings ceilings, with the
-    /// size of one result cut to fit the model's context window.
+    /// The tool limits for this chat's model: the Settings ceilings, lowered
+    /// by the chat's own options, with the size of one result cut to fit the
+    /// model's context window.
     pub(super) fn limits_for(&self, id: SessionId) -> crate::agent::tools::Limits {
-        let window = self.sessions.get(&id).map(|live| {
-            let context = self.ctx_cache.get(&live.s.model).and_then(|i| i.context);
-            window(live.s.model_options.num_ctx, context)
-        });
-        match window {
-            Some(w) => self.limits.for_window(w),
-            None => self.limits.clone(),
-        }
+        let Some(live) = self.sessions.get(&id) else {
+            return self.limits.clone();
+        };
+        let base = registry::effective_limits(&self.limits, &live.s.effective_tools);
+        let context = self.ctx_cache.get(&live.s.model).and_then(|i| i.context);
+        base.for_window(window(live.s.model_options.num_ctx, context))
     }
 
     /// Runs a tool call on the blocking pool. `approved` lets a tool set to
@@ -605,11 +623,12 @@ impl Manager {
         );
         let cancel = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&cancel);
-        let join = if name == web::TOOL {
+        let network = tool::find(&name).is_some_and(|t| t.exec() == Exec::Network);
+        let join = if network {
             // The network is awaited, not run on the blocking pool.
             let max = lim.output_bytes;
             tokio::spawn(async move {
-                let result = fetch_for_agent(&config, &args, approved, &stop, max).await;
+                let result = fetch_for_agent(&config, &name, &args, approved, &stop, max).await;
                 let _ = tx.send(RunMsg::ToolDone {
                     session: id,
                     run,
@@ -658,6 +677,7 @@ impl Manager {
             call_id: call.call_id.clone(),
             msg: call.msg,
             waiting: None,
+            question: false,
             cancel,
         }));
         self.emit(ChatEvent::ToolStarted {
@@ -680,12 +700,7 @@ impl Manager {
         };
         let call = match &mut live.slot {
             // A question is answered with `AnswerQuestion`, not an approval.
-            Slot::Tools(t)
-                if t.call_id == call_id
-                    && t.waiting.as_ref().is_some_and(|c| c.name != ask::TOOL) =>
-            {
-                t.waiting.take()
-            }
+            Slot::Tools(t) if t.call_id == call_id && !t.question => t.waiting.take(),
             _ => None,
         };
         let Some(call) = call else {
@@ -693,56 +708,64 @@ impl Manager {
         };
         match decision {
             ApprovalDecision::Allow => self.start_tool_call(id, call, true),
-            ApprovalDecision::AllowForSession
-                if registry::capability_of(&call.name).as_deref() == Some("shell.run") =>
-            {
-                // Commands are never allowed wholesale: only a plain prefix
-                // such as `cargo test`, and not at all for risky programs.
-                if let Some(live) = self.sessions.get_mut(&id) {
-                    let prefix = call
-                        .arguments
-                        .get("command")
-                        .and_then(Value::as_str)
-                        .and_then(command::allow_prefix);
-                    live.allowed_prefixes.extend(prefix);
-                }
-                self.start_tool_call(id, call, true);
-            }
-            ApprovalDecision::AllowForSession
-                if registry::capability_of(&call.name).as_deref() == Some("web.fetch") =>
-            {
-                // The web never becomes automatic: only this host is allowed,
-                // for this chat.
-                if let (Some(host), Some(live)) =
-                    (web::host_of(&call.arguments), self.sessions.get_mut(&id))
-                {
-                    live.allowed_hosts.insert(host);
-                }
-                self.start_tool_call(id, call, true);
-            }
-            ApprovalDecision::AllowForSession
-                if registry::capability_of(&call.name).as_deref() == Some("files.write") =>
-            {
-                // Writing never becomes automatic: only this file is allowed.
-                let lim = self.limits_for(id);
-                if let Some(live) = self.sessions.get_mut(&id) {
-                    let path = live
-                        .agent
-                        .as_ref()
-                        .and_then(|a| a.preview(&call.name, &call.arguments, &lim))
-                        .map(|p| p.path);
-                    live.allowed_files.extend(path);
-                }
-                self.start_tool_call(id, call, true);
-            }
             ApprovalDecision::AllowForSession => {
-                if let (Some(key), Some(live)) = (
-                    registry::capability_of(&call.name),
-                    self.sessions.get_mut(&id),
-                ) {
-                    live.s.set_capability(&key, Permission::Auto);
-                    let s = live.s.clone();
-                    self.save(&s);
+                let lim = self.limits_for(id);
+                let plan = self
+                    .sessions
+                    .get(&id)
+                    .and_then(|l| l.agent.as_ref())
+                    .and_then(|a| a.plan(&call.name, &call.arguments, &lim));
+                match plan {
+                    // Writing never becomes automatic: only this file is allowed.
+                    Some(Plan::Approve {
+                        scope: Scope::File(path),
+                        ..
+                    }) => {
+                        if let Some(live) = self.sessions.get_mut(&id) {
+                            live.allowed_files.insert(path);
+                        }
+                    }
+                    // Commands are never allowed wholesale: only a plain prefix
+                    // such as `cargo test`.
+                    Some(Plan::Approve {
+                        scope: Scope::CommandPrefix(prefix),
+                        ..
+                    }) => {
+                        if let Some(live) = self.sessions.get_mut(&id) {
+                            live.allowed_prefixes.insert(prefix);
+                        }
+                    }
+                    // The web never becomes automatic: only this host is
+                    // allowed, for this chat.
+                    Some(Plan::Approve {
+                        scope: Scope::Host(host),
+                        ..
+                    }) => {
+                        if let Some(live) = self.sessions.get_mut(&id) {
+                            live.allowed_hosts.insert(host);
+                        }
+                    }
+                    Some(Plan::Approve {
+                        scope: Scope::Capability,
+                        ..
+                    }) => {
+                        if let (Some(key), Some(live)) = (
+                            registry::capability_of(&call.name),
+                            self.sessions.get_mut(&id),
+                        ) {
+                            live.s.set_capability(&key, Permission::Auto);
+                            let s = live.s.clone();
+                            self.save(&s);
+                        }
+                    }
+                    // A command no prefix can cover (risky programs, chained
+                    // commands): only this call is allowed.
+                    Some(Plan::Approve {
+                        scope: Scope::Once, ..
+                    }) => {}
+                    // Nothing to remember (a call that no longer plans):
+                    // only this call is allowed.
+                    _ => {}
                 }
                 self.start_tool_call(id, call, true);
             }
@@ -785,6 +808,7 @@ impl Manager {
             call_id: call.call_id.clone(),
             msg: call.msg,
             waiting: usable.then(|| call.clone()),
+            question: false,
             cancel: Arc::new(AtomicBool::new(false)),
         }));
         if usable {
@@ -872,58 +896,71 @@ impl Manager {
     }
 
     /// The model asks the user a question: the run waits in this slot until
-    /// `AnswerQuestion`. A question that cannot be asked (switched off, too
-    /// many, malformed) goes back to the model as a failed call instead.
+    /// `AnswerQuestion`. A question to a tool that is switched off goes back
+    /// to the model as a failed call instead (the tool's plan refuses one
+    /// past the run's limit, or one it cannot read).
     fn ask_question(&mut self, id: SessionId, call: PendingCall) {
         let Some(live) = self.sessions.get_mut(&id) else {
             return;
         };
+        let on = tool::find(&call.name)
+            .is_some_and(|t| registry::check(&live.s.effective_tools, &t.spec()).is_ok());
+        let asked = if on {
+            ask::parse(&call.arguments).map_err(ToolError::InvalidArguments)
+        } else {
+            Err(ToolError::Off(call.name.clone()))
+        };
+        let question = match asked {
+            Ok(q) => q,
+            Err(e) => {
+                self.refuse(id, call, e);
+                return;
+            }
+        };
         let Some(agent) = live.agent.as_mut() else {
             return;
         };
-        let run = agent.run;
-        let on = registry::specs()
-            .iter()
-            .find(|sp| sp.name == ask::TOOL)
-            .is_some_and(|sp| registry::check(&live.s.effective_tools, sp).is_ok());
-        let asked = if !on {
-            Err(ToolError::Off(ask::TOOL.to_string()))
-        } else if agent.asked >= ask::MAX_PER_RUN {
-            Err(ToolError::InvalidArguments(format!(
-                "you have already asked {} questions in this run; carry on without asking more",
-                ask::MAX_PER_RUN
-            )))
-        } else {
-            ask::parse(&call.arguments).map_err(ToolError::InvalidArguments)
-        };
-        let waiting = asked.is_ok().then(|| call.clone());
+        agent.asked += 1;
         live.slot = Slot::Tools(Box::new(ToolRun {
             join: None,
             call_id: call.call_id.clone(),
             msg: call.msg,
-            waiting,
+            waiting: Some(call.clone()),
+            question: true,
             cancel: Arc::new(AtomicBool::new(false)),
         }));
-        match asked {
-            Ok(question) => {
-                agent.asked += 1;
-                self.emit(ChatEvent::QuestionAsked {
-                    session: id,
-                    call_id: call.call_id,
-                    question,
-                });
-            }
-            // Finished by the manager loop, like a call that ran elsewhere.
-            Err(e) => {
-                let _ = self.run_tx.send(RunMsg::ToolDone {
-                    session: id,
-                    run,
-                    call_id: call.call_id,
-                    result: Err(e),
-                    change: None,
-                });
-            }
-        }
+        self.emit(ChatEvent::QuestionAsked {
+            session: id,
+            call_id: call.call_id,
+            question,
+        });
+    }
+
+    /// Fails a call without running it or asking the user; the model reads
+    /// why. Finished by the manager loop, like a call that ran elsewhere.
+    fn refuse(&mut self, id: SessionId, call: PendingCall, e: ToolError) {
+        let Some(live) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        let Some(agent) = live.agent.as_ref() else {
+            return;
+        };
+        let run = agent.run;
+        live.slot = Slot::Tools(Box::new(ToolRun {
+            join: None,
+            call_id: call.call_id.clone(),
+            msg: call.msg,
+            waiting: None,
+            question: false,
+            cancel: Arc::new(AtomicBool::new(false)),
+        }));
+        let _ = self.run_tx.send(RunMsg::ToolDone {
+            session: id,
+            run,
+            call_id: call.call_id,
+            result: Err(e),
+            change: None,
+        });
     }
 
     /// The user answered a question (`None` is skip).
@@ -937,9 +974,7 @@ impl Manager {
             return;
         };
         let call = match &live.slot {
-            Slot::Tools(t) if t.call_id == call_id => {
-                t.waiting.clone().filter(|c| c.name == ask::TOOL)
-            }
+            Slot::Tools(t) if t.call_id == call_id && t.question => t.waiting.clone(),
             _ => None,
         };
         let Some(call) = call else {
@@ -1280,12 +1315,13 @@ impl Manager {
 /// it into the text the model gets. Ends early when `cancel` is set.
 async fn fetch_for_agent(
     config: &crate::session::EffectiveToolConfig,
+    name: &str,
     args: &Value,
     approved: bool,
     cancel: &AtomicBool,
     max_bytes: usize,
 ) -> Result<String, ToolError> {
-    registry::authorize(config, web::TOOL, approved)?;
+    registry::authorize(config, name, approved)?;
     let url = web::parse(args).map_err(ToolError::InvalidArguments)?;
     let work = web::fetch(url, web::Rules::STRICT);
     let stopped = async {

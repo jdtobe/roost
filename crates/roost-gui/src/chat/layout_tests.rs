@@ -2731,6 +2731,165 @@ fn each_listed_tool_shows_its_limit_and_a_click_explains_it() {
     assert_eq!(app.state_mut().view, View::Settings);
 }
 
+/// Opens the Files list and the limits of its first tool (`list_dir`, whose
+/// one option is "Entries per listing", 1 to the Settings value).
+fn open_first_tool_row(app: &mut App, h: &mut Harness, size: (f32, f32)) {
+    open_agent_settings(app, h, size);
+    let head = app.state_mut().chat_ui.probe.tools_heads[0];
+    click(app, h, size, head.center());
+    run(app, h, size, 2);
+    let chip = app.state_mut().chat_ui.probe.tool_limit_chips[0];
+    click(app, h, size, chip.center());
+    run(app, h, size, 2);
+}
+
+/// Presses at `from`, moves to `to` and lets go, one frame each.
+fn drag(app: &mut App, h: &mut Harness, size: (f32, f32), from: Pos2, to: Pos2) {
+    let mut frame = |events: Vec<egui::Event>| {
+        h.frame(vec2(size.0, size.1), events, |ui| app.show(ui));
+    };
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    frame(vec![egui::Event::PointerMoved(from)]);
+    frame(vec![button(from, true)]);
+    frame(vec![egui::Event::PointerMoved(from.lerp(to, 0.5))]);
+    frame(vec![egui::Event::PointerMoved(to)]);
+    frame(vec![button(to, false)]);
+}
+
+/// What the session's stored overrides are, as the window would learn them.
+fn store_override(app: &mut App, s: &Session, key: &str, value: u64) {
+    let mut tools = s.effective_tools.clone();
+    tools.settings.insert(key.into(), serde_json::json!(value));
+    app.state_mut().chat.fold(ChatEvent::AgentSettings {
+        session: s.id,
+        workspace: s.workspace.clone(),
+        step_budget: s.step_budget,
+        tools,
+    });
+}
+
+#[test]
+fn a_tool_row_shows_its_options_and_changing_one_sends_it() {
+    for size in SIZES {
+        let (mut app, sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        open_first_tool_row(&mut app, &mut h, size);
+        let texts = texts_of(&mut app, &mut h, size);
+        assert!(texts.contains("Entries per listing"), "{size:?}: {texts}");
+        assert!(texts.contains("Change in Settings"), "{size:?}: {texts}");
+        assert!(
+            texts.contains("changes here apply to this chat only"),
+            "{size:?}: {texts}"
+        );
+        assert!(
+            !texts.contains("The same for every agent"),
+            "{size:?}: {texts}"
+        );
+        let p = app.state_mut().chat_ui.probe.clone();
+        let pop = p.tool_limit_popover.expect("popover");
+        assert_eq!(p.tool_option_values.len(), 1, "{size:?}");
+        assert!(inside(p.tool_option_values[0], pop), "{size:?}");
+        assert!(
+            p.tool_option_resets.is_empty(),
+            "{size:?}: nothing to reset"
+        );
+        let _ = sent_chat_commands(&sent);
+        // Dragging it to the left lowers it; letting go sends it once.
+        let v = p.tool_option_values[0];
+        drag(
+            &mut app,
+            &mut h,
+            size,
+            v.center(),
+            v.center() - vec2(60.0, 0.0),
+        );
+        run(&mut app, &mut h, size, 3);
+        let cmds = sent_chat_commands(&sent);
+        assert!(
+            matches!(cmds.as_slice(), [ChatCommand::SetToolOption { session, tool, option, value: Some(v) }]
+                if *session == s.id && tool == "list_dir" && option == "limit" && (1..200).contains(v)),
+            "{size:?}: {cmds:?}"
+        );
+        // Frames with nothing changing send nothing.
+        run(&mut app, &mut h, size, 5);
+        assert!(sent_chat_commands(&sent).is_empty(), "{size:?}");
+        // Opening it for typing and leaving it as it was sends nothing.
+        click(&mut app, &mut h, size, v.center());
+        click(&mut app, &mut h, size, pop.left_top() + vec2(3.0, 3.0));
+        run(&mut app, &mut h, size, 3);
+        assert!(sent_chat_commands(&sent).is_empty(), "{size:?}: unchanged");
+    }
+}
+
+#[test]
+fn reset_clears_the_override() {
+    for size in SIZES {
+        let (mut app, sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        store_override(&mut app, &s, "list_dir.limit", 50);
+        open_first_tool_row(&mut app, &mut h, size);
+        let texts = texts_of(&mut app, &mut h, size);
+        assert!(
+            texts.contains("50"),
+            "{size:?}: shows the stored value: {texts}"
+        );
+        let p = app.state_mut().chat_ui.probe.clone();
+        let pop = p.tool_limit_popover.expect("popover");
+        assert_eq!(p.tool_option_resets.len(), 1, "{size:?}");
+        assert!(inside(p.tool_option_resets[0], pop), "{size:?}");
+        let _ = sent_chat_commands(&sent);
+        click(&mut app, &mut h, size, p.tool_option_resets[0].center());
+        let cmds = sent_chat_commands(&sent);
+        assert!(
+            matches!(cmds.as_slice(), [ChatCommand::SetToolOption { session, tool, option, value: None }]
+                if *session == s.id && tool == "list_dir" && option == "limit"),
+            "{size:?}: {cmds:?}"
+        );
+    }
+}
+
+#[test]
+fn the_option_controls_are_disabled_while_a_run_is_active() {
+    for size in SIZES {
+        let (mut app, sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        store_override(&mut app, &s, "list_dir.limit", 50);
+        open_first_tool_row(&mut app, &mut h, size);
+        // Starting a run closes the menu; opening it again keeps the row
+        // open, with everything in it disabled.
+        app.state_mut().chat.fold(ChatEvent::TurnStarted {
+            session: s.id,
+            turn: TurnId::new(),
+        });
+        run(&mut app, &mut h, size, 3);
+        let chip = app.state_mut().chat_ui.probe.agent_chip.unwrap();
+        click(&mut app, &mut h, size, chip.center());
+        run(&mut app, &mut h, size, 2);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let pop = p.tool_limit_popover.expect("popover");
+        assert_eq!(p.tool_option_values.len(), 1, "{size:?}: still listed");
+        assert!(inside(p.tool_option_values[0], pop), "{size:?}");
+        assert!(inside(p.tool_option_resets[0], pop), "{size:?}");
+        let _ = sent_chat_commands(&sent);
+        let v = p.tool_option_values[0];
+        drag(
+            &mut app,
+            &mut h,
+            size,
+            v.center(),
+            v.center() - vec2(60.0, 0.0),
+        );
+        click(&mut app, &mut h, size, p.tool_option_resets[0].center());
+        run(&mut app, &mut h, size, 3);
+        assert!(sent_chat_commands(&sent).is_empty(), "{size:?}");
+    }
+}
+
 #[test]
 fn the_shell_family_lists_run_command_when_commands_are_on() {
     let size = (1180.0, 820.0);
@@ -4386,4 +4545,299 @@ fn tools_and_the_folder_wait_for_the_model_to_be_known_to_support_tools() {
     assert_eq!(p.tools_icon_red, Some(false));
     assert!(p.folder_pill.is_some() && !p.chips.is_empty(), "{p:?}");
     let _ = sent;
+}
+
+// ------------------------------------------------------------ the tool list
+
+/// Opens the tool list from the "All tools…" button in the tools popover.
+fn open_tool_list(app: &mut App, h: &mut Harness, size: (f32, f32)) {
+    open_agent_settings(app, h, size);
+    let button = app
+        .state_mut()
+        .chat_ui
+        .probe
+        .tool_list_button
+        .expect("an All tools… button");
+    click(app, h, size, button.center());
+    run(app, h, size, 3);
+    assert!(app.state_mut().chat_ui.tool_list_open, "{size:?}");
+}
+
+#[test]
+fn the_tool_list_shows_every_tool_grouped_by_family() {
+    use roost_core::agent::{registry, tool};
+    for size in SIZES {
+        let (mut app, _sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        // Commands are listed once Settings allows them.
+        app.state_mut().settings.agents_can_run = true;
+        open_tool_list(&mut app, &mut h, size);
+        let texts = texts_of(&mut app, &mut h, size);
+        let p = app.state_mut().chat_ui.probe.clone();
+        // Every tool, in the order of `tool::all()` grouped by family.
+        let mut families = Vec::new();
+        for t in tool::all() {
+            let f = t.spec().family;
+            if !families.contains(&f) {
+                families.push(f);
+            }
+        }
+        let expected: Vec<String> = families
+            .iter()
+            .flat_map(|f| {
+                tool::all()
+                    .iter()
+                    .filter(move |t| t.spec().family == *f)
+                    .map(|t| t.name().to_string())
+            })
+            .collect();
+        let rows: Vec<String> = p.tool_list_rows.iter().map(|r| r.0.clone()).collect();
+        assert_eq!(rows, expected, "{size:?}");
+        // A heading above each family's tools, in order.
+        let heads: Vec<_> = p.tool_list_heads.iter().map(|h| h.0.clone()).collect();
+        let want: Vec<_> = families.iter().map(|f| f.label().to_string()).collect();
+        assert_eq!(heads, want, "{size:?}");
+        for (f, (_, head)) in families.iter().zip(&p.tool_list_heads) {
+            let first = tool::all().iter().find(|t| t.spec().family == *f).unwrap();
+            let row = p
+                .tool_list_rows
+                .iter()
+                .find(|r| r.0 == first.name())
+                .unwrap();
+            assert!(head.bottom() <= row.1.top() + 0.5, "{size:?}: {f:?}");
+        }
+        // Each row says what the tool does in one sentence and its state
+        // here: writing and commands are off in Settings by default.
+        assert!(
+            texts.contains("List the entries of a directory in the workspace"),
+            "{texts}"
+        );
+        assert!(
+            !texts.contains("Directories end with /"),
+            "only the first sentence: {texts}"
+        );
+        let spec = tool::find("read_file").unwrap().spec();
+        assert!(registry::tool_enabled(&s.effective_tools, &spec));
+        assert!(texts.contains("allowed"), "{size:?}: {texts}");
+        let win = p.tool_list_window.expect("window");
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(size.0, size.1));
+        assert!(inside(win, screen), "{size:?}: {win:?}");
+        // The options of a tool are in its row.
+        assert!(!p.tool_list_options.is_empty(), "{size:?}");
+    }
+}
+
+#[test]
+fn a_tool_row_in_the_list_toggles_the_tool() {
+    for size in SIZES {
+        let (mut app, sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        open_tool_list(&mut app, &mut h, size);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let win = p.tool_list_window.expect("window");
+        let (name, toggle) = p.tool_list_toggles[0].clone();
+        assert_eq!(name, "list_dir");
+        assert!(inside(toggle, win), "{size:?}");
+        let _ = sent_chat_commands(&sent);
+        click(&mut app, &mut h, size, toggle.center());
+        let cmds = sent_chat_commands(&sent);
+        assert!(
+            matches!(cmds.as_slice(), [ChatCommand::SetToolEnabled(id, tool, false)]
+                if *id == s.id && tool == "list_dir"),
+            "{size:?}: {cmds:?}"
+        );
+    }
+}
+
+#[test]
+fn a_write_tool_that_settings_turned_off_says_so_and_its_switch_is_disabled() {
+    for size in SIZES {
+        let (mut app, sent, _s) = agent_fixture();
+        let mut h = Harness::new(false);
+        app.state_mut().settings.agents_can_write = false;
+        open_tool_list(&mut app, &mut h, size);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let _ = sent_chat_commands(&sent);
+        for name in ["write_file", "edit_file"] {
+            let (_, tag, usable) = p
+                .tool_list_states
+                .iter()
+                .find(|t| t.0 == name)
+                .unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(tag, "off (Settings)", "{size:?}: {name}");
+            assert!(!usable, "{size:?}: {name}");
+        }
+        let read = p.tool_list_states.iter().find(|t| t.0 == "read_file");
+        assert!(
+            matches!(read, Some((_, tag, true)) if tag == "allowed"),
+            "{read:?}"
+        );
+        // A tool Settings leaves alone still toggles.
+        let toggle = p.tool_list_toggles[0].1;
+        click(&mut app, &mut h, size, toggle.center());
+        assert_eq!(sent_chat_commands(&sent).len(), 1, "{size:?}");
+    }
+}
+
+#[test]
+fn commands_are_hidden_in_the_tool_list_until_settings_allows_them() {
+    for size in SIZES {
+        let (mut app, _sent, _s) = agent_fixture();
+        let mut h = Harness::new(false);
+        assert!(!app.state_mut().settings.agents_can_run);
+        open_tool_list(&mut app, &mut h, size);
+        let p = app.state_mut().chat_ui.probe.clone();
+        assert!(
+            p.tool_list_rows.iter().all(|r| r.0 != "run_command"),
+            "{size:?}"
+        );
+        assert!(p.tool_list_heads.iter().all(|h| h.0 != "Shell"), "{size:?}");
+        app.state_mut().settings.agents_can_run = true;
+        run(&mut app, &mut h, size, 3);
+        let p = app.state_mut().chat_ui.probe.clone();
+        assert!(
+            p.tool_list_rows.iter().any(|r| r.0 == "run_command"),
+            "{size:?}"
+        );
+        assert!(p.tool_list_heads.iter().any(|h| h.0 == "Shell"), "{size:?}");
+    }
+}
+
+#[test]
+fn the_limit_summary_and_facts_show_this_chats_value() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, s) = agent_fixture();
+    let mut h = Harness::new(false);
+    store_override(&mut app, &s, "list_dir.limit", 50);
+    open_first_tool_row(&mut app, &mut h, size);
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(texts.contains("50 entries"), "summary: {texts}");
+    assert!(!texts.contains("200 entries"), "summary: {texts}");
+    let facts = texts
+        .lines()
+        .skip_while(|l| *l != "Entries per call")
+        .nth(1)
+        .unwrap_or_default();
+    assert_eq!(facts, "50", "fact: {texts}");
+}
+
+#[test]
+fn the_tool_list_closes_when_tools_stop_being_ready_or_the_session_changes() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, _s) = agent_fixture();
+    let mut h = Harness::new(false);
+    open_tool_list(&mut app, &mut h, size);
+    assert!(app.state_mut().chat_ui.probe.tool_list_window.is_some());
+    // The same chat, now on a model without tools, and back.
+    let model = LONG_MODEL.to_string();
+    app.state_mut().chat.fold(ChatEvent::ModelCapabilities {
+        model: model.clone(),
+        tools: false,
+    });
+    run(&mut app, &mut h, size, 3);
+    app.state_mut()
+        .chat
+        .fold(ChatEvent::ModelCapabilities { model, tools: true });
+    run(&mut app, &mut h, size, 3);
+    assert!(!app.state_mut().chat_ui.tool_list_open, "stays closed");
+    assert!(app.state_mut().chat_ui.probe.tool_list_window.is_none());
+    // Opened for one session, the composer now shows another.
+    app.state_mut().chat_ui.tool_list_open = true;
+    app.state_mut().chat_ui.tool_list_for = Some(roost_core::session::SessionId::new());
+    run(&mut app, &mut h, size, 3);
+    assert!(!app.state_mut().chat_ui.tool_list_open);
+    assert!(app.state_mut().chat_ui.probe.tool_list_window.is_none());
+}
+
+#[test]
+fn the_tool_list_is_inside_the_window_at_every_size() {
+    for size in SIZES {
+        let (mut app, _sent, _s) = agent_fixture();
+        let mut h = Harness::new(false);
+        open_tool_list(&mut app, &mut h, size);
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(size.0, size.1));
+        let p = app.state_mut().chat_ui.probe.clone();
+        let win = p.tool_list_window.expect("window");
+        assert!(inside(win, screen), "{size:?}: {win:?}");
+        assert!(inside(p.tool_list_rows[0].1, win), "{size:?}");
+        assert!(inside(p.tool_list_toggles[0].1, win), "{size:?}");
+        // A long list scrolls inside the window: at the bottom the last
+        // tool is in view.
+        for _ in 0..4 {
+            h.frame(
+                vec2(size.0, size.1),
+                vec![
+                    egui::Event::PointerMoved(win.center()),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: vec2(0.0, -4000.0),
+                        modifiers: Default::default(),
+                        phase: egui::TouchPhase::Move,
+                        source: egui::MouseWheelSource::Wheel,
+                    },
+                ],
+                |ui| app.show(ui),
+            );
+        }
+        run(&mut app, &mut h, size, 2);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let win = p.tool_list_window.expect("window");
+        assert!(inside(win, screen), "{size:?}: {win:?}");
+        let (last, toggle) = p.tool_list_toggles.last().unwrap().clone();
+        assert_eq!(last, "fetch_url");
+        assert!(
+            inside(toggle, win),
+            "{size:?}: last toggle {toggle:?} in {win:?}"
+        );
+    }
+}
+
+#[test]
+fn the_tool_list_is_not_offered_until_tools_are_ready() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, _id) = session_with_model("fresh:1b");
+    let mut h = Harness::new(false);
+    app.state_mut().chat.fold(ChatEvent::ModelCapabilities {
+        model: "fresh:1b".into(),
+        tools: false,
+    });
+    app.state_mut().chat_ui.tool_list_open = true;
+    run(&mut app, &mut h, size, 4);
+    let icon = app.state_mut().chat_ui.probe.agent_chip.unwrap();
+    click(&mut app, &mut h, size, icon.center());
+    run(&mut app, &mut h, size, 3);
+    let p = app.state_mut().chat_ui.probe.clone();
+    assert!(p.tool_list_button.is_none(), "{p:?}");
+    assert!(p.tool_list_window.is_none(), "open, yet not drawn: {p:?}");
+}
+
+#[test]
+fn the_tool_list_options_are_disabled_while_a_run_is_active() {
+    for size in SIZES {
+        let (mut app, sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        store_override(&mut app, &s, "list_dir.limit", 50);
+        app.state_mut().chat_ui.tool_list_open = true;
+        app.state_mut().chat.fold(ChatEvent::TurnStarted {
+            session: s.id,
+            turn: TurnId::new(),
+        });
+        run(&mut app, &mut h, size, 4);
+        let p = app.state_mut().chat_ui.probe.clone();
+        assert!(!p.tool_list_options.is_empty(), "{size:?}: listed");
+        assert!(!p.tool_list_resets.is_empty(), "{size:?}: listed");
+        let _ = sent_chat_commands(&sent);
+        let v = p.tool_list_options[0];
+        drag(
+            &mut app,
+            &mut h,
+            size,
+            v.center(),
+            v.center() - vec2(60.0, 0.0),
+        );
+        click(&mut app, &mut h, size, p.tool_list_resets[0].center());
+        click(&mut app, &mut h, size, p.tool_list_toggles[0].1.center());
+        run(&mut app, &mut h, size, 3);
+        assert!(sent_chat_commands(&sent).is_empty(), "{size:?}");
+    }
 }

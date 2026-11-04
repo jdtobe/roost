@@ -65,6 +65,16 @@ pub struct ChatUi {
     pub tools_open: std::collections::HashSet<(SessionId, u8)>,
     /// The tool whose limits are shown under its row in the Individual tools list.
     pub limits_open: Option<String>,
+    /// The limits were just opened: scroll them into view once.
+    pub limits_reveal: bool,
+    /// A tool option being dragged or typed: the session, `tool.option` and
+    /// the value so far. It is sent when the control is let go of.
+    pub option_edit: Option<(SessionId, String, u64)>,
+    /// The window listing every tool is open.
+    pub tool_list_open: bool,
+    /// The session the open tool list was opened for; it closes when the
+    /// composer shows another one.
+    pub tool_list_for: Option<SessionId>,
     /// A session being renamed in the header, with the text so far.
     pub renaming: Option<(SessionId, String)>,
     pub confirm: Confirm,
@@ -147,6 +157,21 @@ pub struct ChatProbe {
     pub tool_limit_chips: Vec<egui::Rect>,
     pub tool_limit_popover: Option<egui::Rect>,
     pub tool_limit_settings: Option<egui::Rect>,
+    /// The drag value and the Reset button of each option in the open tool row.
+    pub tool_option_values: Vec<egui::Rect>,
+    pub tool_option_resets: Vec<egui::Rect>,
+    /// The "All tools…" button in the tools popover, and in the tool list
+    /// window: the window, each tool's row and on/off switch (by name), and
+    /// the drag value and Reset button of every option in it.
+    pub tool_list_button: Option<egui::Rect>,
+    pub tool_list_window: Option<egui::Rect>,
+    pub tool_list_heads: Vec<(String, egui::Rect)>,
+    pub tool_list_rows: Vec<(String, egui::Rect)>,
+    pub tool_list_toggles: Vec<(String, egui::Rect)>,
+    /// Each tool's status tag and whether its switch can be used.
+    pub tool_list_states: Vec<(String, String, bool)>,
+    pub tool_list_options: Vec<egui::Rect>,
+    pub tool_list_resets: Vec<egui::Rect>,
     /// The Confirm and Cancel buttons shown after choosing Allow for Run.
     pub run_confirm: Option<(egui::Rect, egui::Rect)>,
     /// Per change (by id): its row under the tool, its Undo and Show diff buttons.
@@ -3090,6 +3115,14 @@ fn composer(
             }
         });
     });
+    if agent && gate == super::chrome::ToolsGate::Ready {
+        super::tool_list::window(ui.ctx(), app, out, t, s);
+    } else {
+        // Not offered here (a plain chat, or tools not ready): not left open
+        // for when the user comes back.
+        app.chat_ui.tool_list_open = false;
+        app.chat_ui.tool_list_for = None;
+    }
     if stop {
         out.push(BackendRequest::Chat(ChatCommand::Stop(id)));
     }

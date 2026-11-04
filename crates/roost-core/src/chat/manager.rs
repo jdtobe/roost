@@ -419,6 +419,12 @@ impl Manager {
                 })
                 .await;
             }
+            ChatCommand::SetToolOption {
+                session,
+                tool,
+                option,
+                value,
+            } => self.set_tool_option(session, tool, option, value).await,
             ChatCommand::ListSessions => self.emit_rows().await,
             ChatCommand::InstalledChanged => self.ctx_cache.clear(),
         }
@@ -780,6 +786,43 @@ impl Manager {
             self.session_error(Some(id), m);
         }
         self.emit_rows().await;
+    }
+
+    /// Lowers (or, with `None`, clears) one tool limit for a session. It is
+    /// kept between the option's minimum and the Settings value, and applies
+    /// from the next tool call, so a run need not be stopped first.
+    async fn set_tool_option(
+        &mut self,
+        id: SessionId,
+        tool: String,
+        option: String,
+        value: Option<u64>,
+    ) {
+        let Some(decl) = crate::agent::tool::find(&tool)
+            .and_then(|t| t.options().iter().find(|o| o.key == option))
+        else {
+            self.session_error(Some(id), format!("{tool} has no option {option}."));
+            return;
+        };
+        let ceiling = (decl.get)(&self.limits);
+        let value = value.map(|v| v.clamp(decl.min, ceiling.max(decl.min)));
+        self.edit(id, move |s| {
+            s.set_tool_option(&tool, &option, value);
+            Ok(())
+        })
+        .await;
+        if let Some(live) = self
+            .sessions
+            .get(&id)
+            .filter(|l| l.s.mode == SessionMode::Agent)
+        {
+            self.emit(ChatEvent::AgentSettings {
+                session: id,
+                workspace: live.s.workspace.clone(),
+                step_budget: live.s.step_budget,
+                tools: live.s.effective_tools.clone(),
+            });
+        }
     }
 
     async fn set_model(&mut self, id: SessionId, model: String) {

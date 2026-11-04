@@ -1638,6 +1638,151 @@ async fn changing_an_idle_agents_settings_reports_them() {
 }
 
 #[tokio::test]
+async fn setting_a_tool_option_saves_it_and_emits_agent_settings() {
+    let ws = workspace();
+    let srv = fake_agent(vec![]).await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    let set = |value| ChatCommand::SetToolOption {
+        session: id,
+        tool: "read_file".into(),
+        option: "max_lines".into(),
+        value,
+    };
+    h.cmd(set(Some(10)));
+    h.wait("settings", |e| {
+        e.iter().any(|e| {
+            matches!(e, ChatEvent::AgentSettings { tools, .. }
+            if tools.settings.get("read_file.max_lines") == Some(&serde_json::json!(10))
+                && tools.revision == 1)
+        })
+    })
+    .await;
+    h.wait("saved", |_| {
+        std::fs::read_to_string(h.file(id)).is_ok_and(|t| t.contains("read_file.max_lines"))
+    })
+    .await;
+    // Above the Settings ceiling, it is lowered to it.
+    let ceiling = crate::agent::tools::Limits::default().read_max_lines as u64;
+    h.cmd(set(Some(u64::MAX)));
+    h.wait("clamped", |_| {
+        h.try_read(id).is_some_and(|s| {
+            s.effective_tools.settings.get("read_file.max_lines")
+                == Some(&serde_json::json!(ceiling))
+        })
+    })
+    .await;
+    // A tool or option that does not exist is refused, and nothing is stored.
+    h.cmd(ChatCommand::SetToolOption {
+        session: id,
+        tool: "read_file".into(),
+        option: "nope".into(),
+        value: Some(3),
+    });
+    h.wait("refused", |e| {
+        e.iter()
+            .any(|e| matches!(e, ChatEvent::SessionError { session: Some(s), .. } if *s == id))
+    })
+    .await;
+    assert_eq!(h.read(id).effective_tools.settings.len(), 1);
+    // None goes back to the Settings value.
+    h.cmd(set(None));
+    h.wait("cleared", |_| {
+        h.try_read(id)
+            .is_some_and(|s| s.effective_tools.settings.is_empty())
+    })
+    .await;
+}
+
+/// Runs a command that prints 6000 bytes in an agent whose `run_command`
+/// output option is `option`, and returns what the tool reported.
+async fn command_output_with(option: Option<u64>) -> String {
+    let (_srv, h, id, _ws) = commanding_agent(vec![
+        chat_route(calls(
+            "run_command",
+            serde_json::json!({"command": "head -c 6000 /dev/zero | tr '\\0' x"}),
+        )),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.cmd(ChatCommand::SetToolOption {
+        session: id,
+        tool: "run_command".into(),
+        option: "output_bytes".into(),
+        value: option,
+    });
+    h.send(id, "go").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Allow,
+    });
+    h.wait_run_ended(1).await;
+    tool_outputs(&h.events()).join("\n")
+}
+
+fn longest_run_of_x(text: &str) -> usize {
+    text.split(|c| c != 'x').map(str::len).max().unwrap_or(0)
+}
+
+#[tokio::test]
+async fn a_session_option_lowers_what_a_tool_call_gets() {
+    let out = command_output_with(Some(1500)).await;
+    assert_eq!(longest_run_of_x(&out), 1500, "{out}");
+    // Cleared, the Settings value (cut to the window) applies again.
+    let out = command_output_with(None).await;
+    assert!(longest_run_of_x(&out) > 1500);
+}
+
+#[tokio::test]
+async fn the_model_window_still_cuts_after_a_session_option_raises_nothing_above_it() {
+    // The Settings ceiling (20 KB) allows 5000, but this chat's window only
+    // has room for less: the option is applied first, then the window cut.
+    let out = command_output_with(Some(5000)).await;
+    let window_share = crate::agent::tools::Limits::default()
+        .for_window(crate::chat::context::window(None, None))
+        .run_output_bytes;
+    assert!(window_share < 5000, "the test needs a window below 5000");
+    assert_eq!(longest_run_of_x(&out), window_share, "{out}");
+}
+
+#[tokio::test]
+async fn a_call_already_running_keeps_the_limits_it_started_with() {
+    let (_srv, h, id, _ws) = commanding_agent(vec![
+        chat_route(calls(
+            "run_command",
+            serde_json::json!({"command": "head -c 3000 /dev/zero | tr '\\0' x; sleep 0.3"}),
+        )),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    let set = |value| ChatCommand::SetToolOption {
+        session: id,
+        tool: "run_command".into(),
+        option: "output_bytes".into(),
+        value,
+    };
+    h.cmd(set(Some(1024)));
+    h.send(id, "go").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Allow,
+    });
+    // The command has started with the 1 KB option; clearing it now applies
+    // from the next call, not to this one.
+    h.cmd(set(None));
+    h.wait_run_ended(1).await;
+    assert!(h.read(id).effective_tools.settings.is_empty());
+    let out = tool_outputs(&h.events()).join("\n");
+    assert_eq!(longest_run_of_x(&out), 1024, "{out}");
+}
+
+#[tokio::test]
 async fn regenerate_keeps_the_old_reply_as_a_version_and_resends_the_question() {
     let srv = fake(vec![chat_route(reply("one")), chat_route(reply("two"))]).await;
     let h = start(&srv).await;
@@ -2503,6 +2648,45 @@ async fn a_run_may_ask_only_so_many_questions() {
 }
 
 #[tokio::test]
+async fn a_malformed_question_past_the_limit_is_told_about_the_limit() {
+    let mut asks: Vec<_> = (0..5).map(|_| one_of(&["A", "B"])).collect();
+    asks.push(serde_json::json!({"question": "Which?", "kind": "one"}));
+    let (srv, h, id, _ws) = asking_user_agent(asks).await;
+    h.send(id, "ask a lot").await;
+    for n in 1..=5 {
+        h.wait("asked", |e| count_questions(e) >= n).await;
+        let (call_id, _) = question_for(&h.events()).unwrap();
+        h.cmd(ChatCommand::AnswerQuestion {
+            session: id,
+            call_id,
+            answer: None,
+        });
+    }
+    h.wait_run_ended(1).await;
+    let r = tool_reply(&srv, 6);
+    assert!(r.contains("5 questions") && !r.contains("2 to 8"), "{r}");
+}
+
+#[tokio::test]
+async fn a_question_to_a_switched_off_tool_is_off_even_when_malformed() {
+    let (srv, h, id, _ws) = asking_user_agent(vec![
+        serde_json::json!({"question": "Which?", "kind": "one"}),
+    ])
+    .await;
+    h.cmd(ChatCommand::SetToolEnabled(id, "ask_user".into(), false));
+    h.wait("off", |_| {
+        h.try_read(id)
+            .is_some_and(|s| s.effective_tools.tools.get("ask_user") == Some(&false))
+    })
+    .await;
+    h.send(id, "help me choose").await;
+    h.wait_run_ended(1).await;
+    assert_eq!(count_questions(&h.events()), 0);
+    let r = tool_reply(&srv, 1);
+    assert!(r.contains("ask_user") && !r.contains("2 to 8"), "{r}");
+}
+
+#[tokio::test]
 async fn the_model_is_offered_the_tool_unless_it_is_switched_off() {
     let names = |srv: &TcpScript| -> Vec<String> {
         chat_bodies(srv)[0]["tools"]
@@ -3099,6 +3283,23 @@ async fn a_command_that_cannot_be_covered_offers_no_allowance_and_asks_every_tim
     h.wait_run_ended(1).await;
 }
 
+#[tokio::test]
+async fn a_command_with_no_command_argument_runs_to_fail_without_asking() {
+    let (_srv, h, id, _ws) = commanding_agent(vec![
+        chat_route(calls("run_command", serde_json::json!({}))),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.send(id, "run nothing").await;
+    h.wait_run_ended(1).await;
+    assert_eq!(count_approvals(&h.events()), 0, "nothing to approve");
+    let out = tool_outputs(&h.events());
+    assert!(
+        out.iter().any(|o| o.contains("command is required")),
+        "the model reads why it failed: {out:?}"
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn stopping_the_agent_ends_a_running_command() {
@@ -3197,6 +3398,105 @@ async fn allowing_edits_to_a_file_covers_that_file_only_and_does_not_make_writin
         s.effective_tools.capabilities.get("files.write"),
         Some(&crate::session::Permission::Auto)
     );
+}
+
+#[tokio::test]
+async fn an_unplannable_write_runs_without_asking() {
+    let (_srv, h, id, ws) = asking_agent(vec![
+        chat_route(calls(
+            "edit_file",
+            serde_json::json!({"path": "a.txt", "old_text": "not in it", "new_text": "x"}),
+        )),
+        chat_route(reply("It was not there.")),
+    ])
+    .await;
+    h.send(id, "edit a.txt").await;
+    h.wait_run_ended(1).await;
+    let events = h.events();
+    assert_eq!(count_approvals(&events), 0, "nothing to show, so not asked");
+    assert_eq!(started_tools(&events), 1, "it runs so the model reads why");
+    assert!(events.iter().any(|e| matches!(e, ChatEvent::ToolFinished { ok: false, output, .. } if output.contains("old_text was not found"))));
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join("a.txt")).unwrap(),
+        "hello\nworld\n"
+    );
+}
+
+#[tokio::test]
+async fn allow_for_session_on_a_write_allows_only_that_file() {
+    let (_srv, h, id, ws) = asking_agent(vec![
+        chat_route(calls(
+            "write_file",
+            serde_json::json!({"path": "x.txt", "content": "1\n"}),
+        )),
+        // The other write tool, on the same file: covered too.
+        chat_route(calls(
+            "edit_file",
+            serde_json::json!({"path": "x.txt", "old_text": "1", "new_text": "2"}),
+        )),
+        chat_route(calls(
+            "edit_file",
+            serde_json::json!({"path": "a.txt", "old_text": "hello", "new_text": "bye"}),
+        )),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.send(id, "write x, edit it, then edit a").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::AllowForSession,
+    });
+    h.wait("asked about a.txt", |e| count_approvals(e) == 2)
+        .await;
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join("x.txt")).unwrap(),
+        "2\n"
+    );
+    assert_eq!(
+        preview_of(&h.events()).map(|p| p.path).as_deref(),
+        Some("a.txt")
+    );
+    let (call_id, name) = approval_for(&h.events()).unwrap();
+    assert_eq!(name, "edit_file");
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Deny,
+    });
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join("a.txt")).unwrap(),
+        "hello\nworld\n"
+    );
+    let s = h.try_read(id).unwrap();
+    assert_ne!(
+        s.effective_tools.capabilities.get("files.write"),
+        Some(&crate::session::Permission::Auto),
+        "the file is remembered, not the capability"
+    );
+}
+
+#[tokio::test]
+async fn a_tool_switched_off_while_its_approval_waits_is_refused_on_allow() {
+    let (_srv, h, id, ws) = asking_agent(vec![
+        chat_route(calls(
+            "write_file",
+            serde_json::json!({"path": "late.txt", "content": "x\n"}),
+        )),
+        chat_route(reply("Could not.")),
+    ])
+    .await;
+    h.send(id, "write it").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    // A session's own tools cannot change during a run; the Settings switch can.
+    h.cmd(ChatCommand::SetWritesAllowed(false));
+    allow_next(&h, id);
+    h.wait_run_ended(1).await;
+    assert!(!ws.path().join("late.txt").exists());
+    assert!(h.events().iter().any(|e| matches!(e, ChatEvent::ToolFinished { ok: false, output, .. } if output.contains("turned off"))));
 }
 
 #[tokio::test]
@@ -3743,6 +4043,100 @@ async fn allowing_a_host_covers_that_host_for_the_chat_and_never_the_whole_web()
         s.effective_tools.capabilities.get("web.fetch"),
         Some(&crate::session::Permission::Ask)
     );
+}
+
+#[tokio::test]
+async fn an_allowed_host_is_fetched_without_asking() {
+    let (_srv, h, id, _ws) = web_agent(vec![
+        chat_route(calls(
+            "fetch_url",
+            serde_json::json!({"url": "https://localhost:9/one"}),
+        )),
+        chat_route(calls(
+            "fetch_url",
+            serde_json::json!({"url": "https://localhost:9/two"}),
+        )),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.send(id, "fetch twice").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::AllowForSession,
+    });
+    h.wait_run_ended(1).await;
+    let events = h.events();
+    assert_eq!(
+        count_approvals(&events),
+        1,
+        "the second fetch was not asked"
+    );
+    assert_eq!(started_tools(&events), 2, "both fetches ran");
+}
+
+#[tokio::test]
+async fn a_fetch_without_an_address_fails_and_the_model_reads_why() {
+    let (srv, h, id, _ws) = web_agent(vec![
+        chat_route(calls("fetch_url", serde_json::json!({}))),
+        chat_route(calls(
+            "fetch_url",
+            serde_json::json!({"url": "not an address"}),
+        )),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.send(id, "fetch nothing").await;
+    h.wait_run_ended(1).await;
+    assert_eq!(count_approvals(&h.events()), 0, "nothing to approve");
+    let first = tool_reply(&srv, 1);
+    assert!(first.contains("url is required"), "{first}");
+    let second = tool_reply(&srv, 2);
+    assert!(second.contains("not a valid address"), "{second}");
+}
+
+#[tokio::test]
+async fn the_web_never_becomes_automatic_on_allow_for_session() {
+    let (_srv, h, id, _ws) = web_agent(vec![
+        chat_route(calls(
+            "fetch_url",
+            serde_json::json!({"url": "https://localhost:9/one"}),
+        )),
+        chat_route(calls(
+            "fetch_url",
+            serde_json::json!({"url": "https://127.0.0.1:9/two"}),
+        )),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.send(id, "fetch two hosts").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::AllowForSession,
+    });
+    h.wait("the other host asks", |e| count_approvals(e) == 2)
+        .await;
+    assert_eq!(
+        h.try_read(id)
+            .unwrap()
+            .effective_tools
+            .capabilities
+            .get("web.fetch"),
+        Some(&crate::session::Permission::Ask),
+        "web.fetch is still Ask"
+    );
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Deny,
+    });
+    h.wait_run_ended(1).await;
 }
 
 // ---- an agent without a folder
