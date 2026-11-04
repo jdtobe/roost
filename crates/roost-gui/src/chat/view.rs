@@ -72,6 +72,9 @@ pub struct ChatUi {
     pub option_edit: Option<(SessionId, String, u64)>,
     /// The window listing every tool is open.
     pub tool_list_open: bool,
+    /// The session the open tool list was opened for; it closes when the
+    /// composer shows another one.
+    pub tool_list_for: Option<SessionId>,
     /// A session being renamed in the header, with the text so far.
     pub renaming: Option<(SessionId, String)>,
     pub confirm: Confirm,
@@ -165,6 +168,8 @@ pub struct ChatProbe {
     pub tool_list_heads: Vec<(String, egui::Rect)>,
     pub tool_list_rows: Vec<(String, egui::Rect)>,
     pub tool_list_toggles: Vec<(String, egui::Rect)>,
+    /// Each tool's status tag and whether its switch can be used.
+    pub tool_list_states: Vec<(String, String, bool)>,
     pub tool_list_options: Vec<egui::Rect>,
     pub tool_list_resets: Vec<egui::Rect>,
     /// The Confirm and Cancel buttons shown after choosing Allow for Run.
@@ -3112,6 +3117,11 @@ fn composer(
     });
     if agent && gate == super::chrome::ToolsGate::Ready {
         super::tool_list::window(ui.ctx(), app, out, t, s);
+    } else {
+        // Not offered here (a plain chat, or tools not ready): not left open
+        // for when the user comes back.
+        app.chat_ui.tool_list_open = false;
+        app.chat_ui.tool_list_for = None;
     }
     if stop {
         out.push(BackendRequest::Chat(ChatCommand::Stop(id)));

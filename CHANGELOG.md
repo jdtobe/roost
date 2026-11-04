@@ -81,10 +81,14 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - In an agent's Individual tools list, each tool shows how much it can return (for example `list_dir  200 entries`). Clicking it shows all of that tool's limits, with a button that opens Settings, Tools, where they are changed.
 
+### Tools
+
+- "All tools…" in the agent's tools menu opens a window that lists every tool by family: what it does, whether it is off, asks or is allowed in this chat ("off (Settings)" when Settings turned writing or commands off, and then its switch is disabled), an on/off switch, its limits, and what the model is told about it.
+- A tool's limits in the agent's tools list can now be lowered for just that chat: open a tool's limits and drag or type a smaller value (never above the one in Settings), or press Reset to go back to the Settings value.
+- Internally each built-in tool is now one `Tool` implementation registered in one list, so adding a tool is one file; see `docs/ADDING_A_TOOL.md`. The tool definitions sent to the model are unchanged.
+
 ### Agents can ask you questions
 
-- "All tools…" in the agent's tools menu opens a window that lists every tool by family: what it does, whether it is off, asks or is allowed in this chat, an on/off switch, its limits, and what the model is told about it.
-- A tool's limits in the agent's tools list can now be lowered for just that chat: open a tool's limits and drag or type a smaller value (never above the one in Settings), or press Reset to go back to the Settings value.
 - A new tool, `ask_user`, lets an agent stop and ask: pick one of 2 to 8 options, pick several, or type an answer. Pick questions also take an answer of your own, and you can skip. The question appears above the input, the run waits (also while you look at another chat), and your answer goes back to the model. The question and your answer stay in the chat.
 - It is on by default and can be switched off in the Individual tools list ("Ask you"). An agent may ask up to 5 questions per run. A question counts as an alert while the window is in the background ("Has a question for you").
 

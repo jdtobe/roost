@@ -4648,6 +4648,65 @@ fn a_tool_row_in_the_list_toggles_the_tool() {
 }
 
 #[test]
+fn a_tool_that_settings_turned_off_says_so_and_its_switch_is_disabled() {
+    for size in SIZES {
+        let (mut app, sent, _s) = agent_fixture();
+        let mut h = Harness::new(false);
+        // Commands are off in Settings by default; writing is turned off here.
+        app.state_mut().settings.agents_can_write = false;
+        open_tool_list(&mut app, &mut h, size);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let _ = sent_chat_commands(&sent);
+        for name in ["run_command", "write_file", "edit_file"] {
+            let (_, tag, usable) = p
+                .tool_list_states
+                .iter()
+                .find(|t| t.0 == name)
+                .unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(tag, "off (Settings)", "{size:?}: {name}");
+            assert!(!usable, "{size:?}: {name}");
+        }
+        let read = p.tool_list_states.iter().find(|t| t.0 == "read_file");
+        assert!(
+            matches!(read, Some((_, tag, true)) if tag == "allowed"),
+            "{read:?}"
+        );
+        // A tool Settings leaves alone still toggles.
+        let toggle = p.tool_list_toggles[0].1;
+        click(&mut app, &mut h, size, toggle.center());
+        assert_eq!(sent_chat_commands(&sent).len(), 1, "{size:?}");
+    }
+}
+
+#[test]
+fn the_tool_list_closes_when_tools_stop_being_ready_or_the_session_changes() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, _s) = agent_fixture();
+    let mut h = Harness::new(false);
+    open_tool_list(&mut app, &mut h, size);
+    assert!(app.state_mut().chat_ui.probe.tool_list_window.is_some());
+    // The same chat, now on a model without tools, and back.
+    let model = LONG_MODEL.to_string();
+    app.state_mut().chat.fold(ChatEvent::ModelCapabilities {
+        model: model.clone(),
+        tools: false,
+    });
+    run(&mut app, &mut h, size, 3);
+    app.state_mut()
+        .chat
+        .fold(ChatEvent::ModelCapabilities { model, tools: true });
+    run(&mut app, &mut h, size, 3);
+    assert!(!app.state_mut().chat_ui.tool_list_open, "stays closed");
+    assert!(app.state_mut().chat_ui.probe.tool_list_window.is_none());
+    // Opened for one session, the composer now shows another.
+    app.state_mut().chat_ui.tool_list_open = true;
+    app.state_mut().chat_ui.tool_list_for = Some(roost_core::session::SessionId::new());
+    run(&mut app, &mut h, size, 3);
+    assert!(!app.state_mut().chat_ui.tool_list_open);
+    assert!(app.state_mut().chat_ui.probe.tool_list_window.is_none());
+}
+
+#[test]
 fn the_tool_list_is_inside_the_window_at_every_size() {
     for size in SIZES {
         let (mut app, _sent, _s) = agent_fixture();

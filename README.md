@@ -89,6 +89,7 @@ Create an empty file named `portable` next to the executable. Settings, import h
 - [Architecture](docs/ARCHITECTURE.md)
 - [FAQ](docs/FAQ.md)
 - [Development](docs/DEVELOPMENT.md)
+- [Adding an agent tool](docs/ADDING_A_TOOL.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Changelog](CHANGELOG.md)
 

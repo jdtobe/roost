@@ -31,14 +31,15 @@ fn first_sentence(description: &str) -> String {
 }
 
 /// What the tool can do in this chat: `off` (its switch, its permission, or
-/// Settings), `ask` or `allowed`, and why.
+/// Settings), `ask` or `allowed`, and why. A tool Settings turned off reads
+/// `off (Settings)`: its switch does nothing.
 fn status(app: &AppState, s: &Session, spec: &ToolSpec) -> (&'static str, &'static str) {
     let settings = &app.settings;
     if spec.capability == Capability::Write && !settings.agents_can_write {
-        return ("off", "Writing files is off in Settings");
+        return ("off (Settings)", "Writing files is off in Settings");
     }
     if spec.family == Family::Shell && !settings.agents_can_run {
-        return ("off", "Running commands is off in Settings");
+        return ("off (Settings)", "Running commands is off in Settings");
     }
     if !registry::tool_enabled(&s.effective_tools, spec) {
         return ("off", "Switched off for this chat");
@@ -65,12 +66,18 @@ pub(super) fn window(
         p.tool_list_heads.clear();
         p.tool_list_rows.clear();
         p.tool_list_toggles.clear();
+        p.tool_list_states.clear();
         p.tool_list_options.clear();
         p.tool_list_resets.clear();
     }
+    if app.chat_ui.tool_list_open && app.chat_ui.tool_list_for.is_some_and(|id| id != s.id) {
+        app.chat_ui.tool_list_open = false;
+    }
     if !app.chat_ui.tool_list_open {
+        app.chat_ui.tool_list_for = None;
         return;
     }
+    app.chat_ui.tool_list_for = Some(s.id);
     let screen = ctx.content_rect();
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN).max(200.0);
     let list_h = (screen.height() - 2.0 * MARGIN - CHROME_H).max(120.0);
@@ -180,7 +187,15 @@ fn row(
             ui.horizontal(|ui| {
                 ui.label(RichText::new(spec.name).font(mono(12.5)).color(t.fg));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let toggle = ui.add_enabled(!running, egui::Checkbox::new(&mut on, ""));
+                    let forced_off = state == "off (Settings)";
+                    let toggle =
+                        ui.add_enabled(!running && !forced_off, egui::Checkbox::new(&mut on, ""));
+                    #[cfg(test)]
+                    app.chat_ui.probe.tool_list_states.push((
+                        spec.name.to_string(),
+                        state.to_string(),
+                        toggle.enabled(),
+                    ));
                     #[cfg(test)]
                     app.chat_ui
                         .probe
