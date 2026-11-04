@@ -555,6 +555,29 @@ mod tests {
     }
 
     #[test]
+    fn the_tool_definitions_sent_to_the_model_have_not_changed() {
+        // Every tool on, every capability automatic.
+        let mut config = cfg();
+        for s in specs() {
+            config
+                .capabilities
+                .insert(capability_key(s.family, s.capability), Permission::Auto);
+        }
+        let mut text = serde_json::to_string_pretty(&ollama_definitions(&config)).unwrap();
+        text.push('\n');
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/golden/tool_definitions.json"
+        );
+        if std::env::var_os("UPDATE_GOLDEN").is_some() {
+            std::fs::create_dir_all(std::path::Path::new(path).parent().unwrap()).unwrap();
+            std::fs::write(path, &text).unwrap();
+        }
+        let golden = std::fs::read_to_string(path).expect("golden file; run with UPDATE_GOLDEN=1");
+        assert_eq!(text, golden);
+    }
+
+    #[test]
     fn the_registry_has_six_read_tools_two_write_tools_a_command_tool_a_web_tool_and_the_question_tool(
     ) {
         let all = specs();
