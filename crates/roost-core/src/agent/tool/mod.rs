@@ -8,6 +8,8 @@ use super::tools::Limits;
 use super::workspace::{ToolError, Workspace};
 use serde_json::Value;
 
+mod files_read;
+
 /// What the chat loop should do with a call before it runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Plan {
@@ -71,14 +73,10 @@ pub trait Tool: Send + Sync {
     fn needs_workspace(&self) -> bool;
     fn options(&self) -> &'static [OptionDecl];
     fn plan(&self, cx: &PlanCx, args: &Value) -> Plan;
-    fn run(
-        &self,
-        cx: &RunCx,
-        args: &Value,
-    ) -> (Result<String, ToolError>, Option<change::Change>);
+    fn run(&self, cx: &RunCx, args: &Value) -> (Result<String, ToolError>, Option<change::Change>);
 }
 
 /// The tools defined through the trait.
 pub fn all() -> &'static [&'static dyn Tool] {
-    &[]
+    &[&files_read::ListDir, &files_read::ReadFile]
 }

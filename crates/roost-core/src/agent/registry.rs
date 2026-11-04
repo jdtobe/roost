@@ -155,34 +155,9 @@ pub fn specs() -> Vec<ToolSpec> {
         description,
         parameters,
     };
-    vec![
-        read(
-            "list_dir",
-            "List the entries of a directory in the workspace, by name or sorted by size or time. Directories end with /. A long listing is cut, and the result says which offset to use to see the rest.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Directory relative to the workspace root. Defaults to the root."},
-                    "offset": {"type": "integer", "description": "Entries to skip, to continue a cut listing. Defaults to 0."},
-                    "limit": {"type": "integer", "description": "Return at most this many (never more than the user allows). Ask for fewer when a few will do."},
-                    "sort": {"type": "string", "enum": ["name", "size", "modified"], "description": "Order: name (default), size (largest first) or modified (newest first)."},
-                    "reverse": {"type": "boolean", "description": "Flip the order."}
-                }
-            }),
-        ),
-        read(
-            "read_file",
-            "Read a text file from the workspace, with line numbers. Long files are cut, and the result says which offset to use to continue.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "File relative to the workspace root."},
-                    "offset": {"type": "integer", "description": "First line to return, starting at 1."},
-                    "limit": {"type": "integer", "description": "Number of lines to return."}
-                },
-                "required": ["path"]
-            }),
-        ),
+    let mut specs: Vec<ToolSpec> = super::tool::all().iter().map(|t| t.spec()).collect();
+    // Not yet defined through the `Tool` trait.
+    specs.extend([
         read(
             "read_binary",
             "Show the bytes of any file (a ROM, an image, an archive …) as a hex dump: offset, 16 bytes in hex, and the same bytes as text. Returns a limited number of bytes per call and says which offset to use to continue. Offsets may be written as 4096 or 0x1000. Use this when read_file says a file is binary.",
@@ -292,7 +267,8 @@ pub fn specs() -> Vec<ToolSpec> {
             description: super::web::description(),
             parameters: super::web::parameters(),
         },
-    ]
+    ]);
+    specs
 }
 
 /// The permission a spec currently has in a session's configuration. A
@@ -468,9 +444,15 @@ fn run(
             None,
         );
     }
+    if let Some(tool) = super::tool::all().iter().find(|t| t.spec().name == name) {
+        let cx = super::tool::RunCx {
+            workspace: ws,
+            limits,
+            opts,
+        };
+        return tool.run(&cx, args);
+    }
     match name {
-        "list_dir" => (tools::list_dir(ws, args, limits), None),
-        "read_file" => (tools::read_file(ws, args, limits), None),
         "read_binary" => (tools::read_binary(ws, args, limits), None),
         "find_files" => (tools::find_files(ws, args, limits), None),
         "search_text" => (tools::search_text(ws, args, limits), None),
@@ -588,7 +570,11 @@ mod tests {
         for t in tools {
             let spec = t.spec();
             assert!(seen.insert(spec.name), "{} is registered twice", spec.name);
-            assert!(!spec.description.is_empty(), "{} has no description", spec.name);
+            assert!(
+                !spec.description.is_empty(),
+                "{} has no description",
+                spec.name
+            );
             assert_eq!(spec.parameters["type"], "object", "{}", spec.name);
         }
     }
