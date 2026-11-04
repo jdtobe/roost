@@ -578,6 +578,22 @@ mod tests {
     }
 
     #[test]
+    fn every_registered_tool_has_a_unique_name_a_description_and_an_object_schema() {
+        let tools = super::super::tool::all();
+        let found: Vec<&str> = tools.iter().map(|t| t.spec().name).collect();
+        for expected in ["list_dir", "read_file"] {
+            assert!(found.contains(&expected), "{expected} is not registered");
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for t in tools {
+            let spec = t.spec();
+            assert!(seen.insert(spec.name), "{} is registered twice", spec.name);
+            assert!(!spec.description.is_empty(), "{} has no description", spec.name);
+            assert_eq!(spec.parameters["type"], "object", "{}", spec.name);
+        }
+    }
+
+    #[test]
     fn the_registry_has_six_read_tools_two_write_tools_a_command_tool_a_web_tool_and_the_question_tool(
     ) {
         let all = specs();
