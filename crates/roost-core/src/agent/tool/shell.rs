@@ -1,6 +1,6 @@
 //! The tool that runs a shell command on the user's computer.
 
-use super::{OptionDecl, Plan, PlanCx, RunCx, Scope, Tool};
+use super::{Exec, OptionDecl, Plan, PlanCx, RunCx, Scope, Tool};
 use crate::agent::change;
 use crate::agent::command::{self, RunPreview};
 use crate::agent::registry::{Capability, Family, ToolSpec};
@@ -32,6 +32,10 @@ impl Tool for RunCommand {
 
     fn needs_workspace(&self) -> bool {
         true
+    }
+
+    fn exec(&self) -> Exec {
+        Exec::Blocking
     }
 
     fn options(&self) -> &'static [OptionDecl] {

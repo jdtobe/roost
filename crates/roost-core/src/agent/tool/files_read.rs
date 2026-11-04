@@ -1,6 +1,6 @@
 //! The tools that read files and folders in the workspace.
 
-use super::{OptionDecl, Plan, PlanCx, RunCx, Tool};
+use super::{Exec, OptionDecl, Plan, PlanCx, RunCx, Tool};
 use crate::agent::change;
 use crate::agent::registry::{Capability, Family, ToolSpec};
 use crate::agent::tools;
@@ -35,6 +35,10 @@ impl Tool for ListDir {
 
     fn needs_workspace(&self) -> bool {
         true
+    }
+
+    fn exec(&self) -> Exec {
+        Exec::Blocking
     }
 
     fn options(&self) -> &'static [OptionDecl] {
@@ -79,6 +83,10 @@ impl Tool for ReadFile {
         true
     }
 
+    fn exec(&self) -> Exec {
+        Exec::Blocking
+    }
+
     fn options(&self) -> &'static [OptionDecl] {
         &[]
     }
@@ -119,6 +127,10 @@ impl Tool for ReadBinary {
 
     fn needs_workspace(&self) -> bool {
         true
+    }
+
+    fn exec(&self) -> Exec {
+        Exec::Blocking
     }
 
     fn options(&self) -> &'static [OptionDecl] {
@@ -166,6 +178,10 @@ impl Tool for FindFiles {
         true
     }
 
+    fn exec(&self) -> Exec {
+        Exec::Blocking
+    }
+
     fn options(&self) -> &'static [OptionDecl] {
         &[]
     }
@@ -210,6 +226,10 @@ impl Tool for SearchText {
         true
     }
 
+    fn exec(&self) -> Exec {
+        Exec::Blocking
+    }
+
     fn options(&self) -> &'static [OptionDecl] {
         &[]
     }
@@ -252,6 +272,10 @@ impl Tool for SearchBytes {
 
     fn needs_workspace(&self) -> bool {
         true
+    }
+
+    fn exec(&self) -> Exec {
+        Exec::Blocking
     }
 
     fn options(&self) -> &'static [OptionDecl] {

@@ -9,9 +9,11 @@ use super::tools::Limits;
 use super::workspace::{ToolError, Workspace};
 use serde_json::Value;
 
+mod ask;
 mod files_read;
 mod files_write;
 mod shell;
+mod web;
 
 /// What the chat loop should do with a call before it runs. The tool's
 /// permission still decides: under Auto an `Approve` runs without asking,
@@ -49,7 +51,15 @@ pub enum Scope {
     /// Nothing is remembered: allowing covers only this call (a command no
     /// prefix can safely cover).
     Once,
+    /// One web host, lowercased, such as `example.com`.
     Host(String),
+}
+
+/// Where a call runs: on the blocking pool, or awaited on the network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exec {
+    Blocking,
+    Network,
 }
 
 /// The plan of a tool with nothing to show: under Ask it asks, and "Allow
@@ -76,6 +86,8 @@ pub struct OptionDecl {
 pub struct PlanCx<'a> {
     pub workspace: Option<&'a Workspace>,
     pub limits: &'a Limits,
+    /// Questions this run has already asked the user.
+    pub questions_asked: u32,
 }
 
 pub struct RunCx<'a> {
@@ -91,12 +103,14 @@ pub trait Tool: Send + Sync {
     fn spec(&self) -> ToolSpec;
     /// True when the tool cannot run without a workspace folder.
     fn needs_workspace(&self) -> bool;
+    /// How the chat loop runs a call.
+    fn exec(&self) -> Exec;
     fn options(&self) -> &'static [OptionDecl];
     fn plan(&self, cx: &PlanCx, args: &Value) -> Plan;
     fn run(&self, cx: &RunCx, args: &Value) -> (Result<String, ToolError>, Option<change::Change>);
 }
 
-/// The tools defined through the trait.
+/// Every built-in tool, in the order the model is told about them.
 pub fn all() -> &'static [&'static dyn Tool] {
     &[
         &files_read::ListDir,
@@ -108,10 +122,12 @@ pub fn all() -> &'static [&'static dyn Tool] {
         &files_write::WriteFile,
         &files_write::EditFile,
         &shell::RunCommand,
+        &ask::AskUser,
+        &web::FetchUrl,
     ]
 }
 
-/// The tool called `name`, if it is defined through the trait.
+/// The tool called `name`, if there is one.
 pub fn find(name: &str) -> Option<&'static dyn Tool> {
     all().iter().copied().find(|t| t.name() == name)
 }

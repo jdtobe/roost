@@ -1,7 +1,7 @@
 //! The tools that change files in the workspace. Each change is planned
 //! first, so the approval card can show it and undo can keep the original.
 
-use super::{OptionDecl, Plan, PlanCx, RunCx, Scope, Tool};
+use super::{Exec, OptionDecl, Plan, PlanCx, RunCx, Scope, Tool};
 use crate::agent::change;
 use crate::agent::registry::{Capability, Family, ToolSpec};
 use crate::agent::workspace::ToolError;
@@ -33,6 +33,10 @@ impl Tool for WriteFile {
 
     fn needs_workspace(&self) -> bool {
         true
+    }
+
+    fn exec(&self) -> Exec {
+        Exec::Blocking
     }
 
     fn options(&self) -> &'static [OptionDecl] {
@@ -75,6 +79,10 @@ impl Tool for EditFile {
 
     fn needs_workspace(&self) -> bool {
         true
+    }
+
+    fn exec(&self) -> Exec {
+        Exec::Blocking
     }
 
     fn options(&self) -> &'static [OptionDecl] {
@@ -151,6 +159,7 @@ mod tests {
         let cx = PlanCx {
             workspace: Some(&ws),
             limits: &limits,
+            questions_asked: 0,
         };
         let edit = json!({"path": "./a.txt", "old_text": "hello", "new_text": "bye"});
         match EditFile.plan(&cx, &edit) {
@@ -170,6 +179,7 @@ mod tests {
         let no_folder = PlanCx {
             workspace: None,
             limits: &limits,
+            questions_asked: 0,
         };
         let new = json!({"path": "n.txt", "content": "x"});
         assert_eq!(WriteFile.plan(&no_folder, &new), Plan::Run);

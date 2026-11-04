@@ -134,25 +134,7 @@ pub fn default_permission(_family: Family, capability: Capability) -> Permission
 
 /// The built-in tools.
 pub fn specs() -> Vec<ToolSpec> {
-    let mut specs: Vec<ToolSpec> = super::tool::all().iter().map(|t| t.spec()).collect();
-    // Not yet defined through the `Tool` trait.
-    specs.extend([
-        ToolSpec {
-            name: super::ask::TOOL,
-            family: Family::Ask,
-            capability: Capability::Ask,
-            description: super::ask::description(),
-            parameters: super::ask::parameters(),
-        },
-        ToolSpec {
-            name: super::web::TOOL,
-            family: Family::Web,
-            capability: Capability::Fetch,
-            description: super::web::description(),
-            parameters: super::web::parameters(),
-        },
-    ]);
-    specs
+    super::tool::all().iter().map(|t| t.spec()).collect()
 }
 
 /// The permission a spec currently has in a session's configuration. A
@@ -209,10 +191,7 @@ pub fn needs_approval(config: &EffectiveToolConfig, name: &str) -> bool {
 /// True when a tool works inside the agent's working directory, so a call
 /// has to wait until one is attached. Questions and web fetches do not.
 pub fn needs_workspace(name: &str) -> bool {
-    specs()
-        .iter()
-        .find(|s| s.name == name)
-        .is_some_and(|s| matches!(s.family, Family::Files | Family::Shell))
+    super::tool::find(name).is_some_and(|t| t.needs_workspace())
 }
 
 /// The settings key of the capability a tool belongs to (for "allow for this
@@ -308,11 +287,10 @@ fn run(
     opts: &Options,
 ) -> (Result<String, ToolError>, Option<change::Change>) {
     let approved = opts.approved;
-    let spec = match specs().into_iter().find(|s| s.name == name) {
-        Some(s) => s,
-        None => return (Err(ToolError::UnknownTool(name.to_string())), None),
+    let Some(tool) = super::tool::find(name) else {
+        return (Err(ToolError::UnknownTool(name.to_string())), None);
     };
-    match check(config, &spec) {
+    match check(config, &tool.spec()) {
         Err(ToolError::NeedsApproval(_)) if approved => {}
         Err(e) => return (Err(e), None),
         Ok(()) => {}
@@ -328,31 +306,12 @@ fn run(
             None,
         );
     }
-    if let Some(tool) = super::tool::find(name) {
-        let cx = super::tool::RunCx {
-            workspace: ws,
-            limits,
-            opts,
-        };
-        return tool.run(&cx, args);
-    }
-    match name {
-        // Fetched by the chat manager, which can wait for the network.
-        super::web::TOOL => (
-            Err(ToolError::InvalidArguments(
-                "this tool is handled by the app, not run here".into(),
-            )),
-            None,
-        ),
-        // Asked through the chat manager, which waits for the user.
-        super::ask::TOOL => (
-            Err(ToolError::InvalidArguments(
-                "this tool is handled by the app, not run here".into(),
-            )),
-            None,
-        ),
-        other => (Err(ToolError::UnknownTool(other.to_string())), None),
-    }
+    let cx = super::tool::RunCx {
+        workspace: ws,
+        limits,
+        opts,
+    };
+    tool.run(&cx, args)
 }
 
 #[cfg(test)]
