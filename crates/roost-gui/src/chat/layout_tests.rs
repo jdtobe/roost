@@ -2810,6 +2810,11 @@ fn a_tool_row_shows_its_options_and_changing_one_sends_it() {
         // Frames with nothing changing send nothing.
         run(&mut app, &mut h, size, 5);
         assert!(sent_chat_commands(&sent).is_empty(), "{size:?}");
+        // Opening it for typing and leaving it as it was sends nothing.
+        click(&mut app, &mut h, size, v.center());
+        click(&mut app, &mut h, size, pop.left_top() + vec2(3.0, 3.0));
+        run(&mut app, &mut h, size, 3);
+        assert!(sent_chat_commands(&sent).is_empty(), "{size:?}: unchanged");
     }
 }
 
@@ -2847,11 +2852,16 @@ fn the_option_controls_are_disabled_while_a_run_is_active() {
         let mut h = Harness::new(false);
         store_override(&mut app, &s, "list_dir.limit", 50);
         open_first_tool_row(&mut app, &mut h, size);
+        // Starting a run closes the menu; opening it again keeps the row
+        // open, with everything in it disabled.
         app.state_mut().chat.fold(ChatEvent::TurnStarted {
             session: s.id,
             turn: TurnId::new(),
         });
         run(&mut app, &mut h, size, 3);
+        let chip = app.state_mut().chat_ui.probe.agent_chip.unwrap();
+        click(&mut app, &mut h, size, chip.center());
+        run(&mut app, &mut h, size, 2);
         let p = app.state_mut().chat_ui.probe.clone();
         let pop = p.tool_limit_popover.expect("popover");
         assert_eq!(p.tool_option_values.len(), 1, "{size:?}: still listed");

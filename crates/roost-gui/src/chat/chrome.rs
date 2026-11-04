@@ -16,7 +16,8 @@ use eframe::egui::{
 use roost_core::agent::registry::{self, Capability, Family};
 use roost_core::chat::ChatCommand;
 use roost_core::session::{
-    Message, MessageContent, Permission, Session, SessionLifetime, SessionMode, ToolStatus,
+    EffectiveToolConfig, Message, MessageContent, Permission, Session, SessionLifetime,
+    SessionMode, ToolStatus,
 };
 use std::time::Instant;
 
@@ -1255,6 +1256,8 @@ pub(super) fn agent_settings(
                         app.chat_ui.probe.run_buttons.clear();
                         app.chat_ui.probe.run_confirm = None;
                         app.chat_ui.probe.tools_heads.clear();
+                        app.chat_ui.probe.tool_option_values.clear();
+                        app.chat_ui.probe.tool_option_resets.clear();
                     }
                     for family in [Family::Files, Family::Shell, Family::Web, Family::Ask] {
                         if family == Family::Shell && !app.settings.agents_can_run {
@@ -1459,7 +1462,7 @@ fn family_card(
                         tool_limit_chip(ui, app, t, spec.name, was_on);
                     });
                     if app.chat_ui.limits_open.as_deref() == Some(spec.name) {
-                        tool_limit_panel(ui, app, t, spec.name);
+                        tool_limit_panel(ui, app, out, t, s, spec.name, running);
                     }
                 }
             }
@@ -1493,14 +1496,23 @@ fn tool_limit_chip(ui: &mut egui::Ui, app: &mut AppState, t: &Tokens, name: &str
     app.chat_ui.probe.tool_limit_chips.push(chip.rect);
     if chip.clicked() {
         app.chat_ui.limits_open = if open { None } else { Some(name.to_string()) };
+        app.chat_ui.limits_reveal = !open;
     }
 }
 
 /// All of one tool's limits, under its row. They are changed in Settings.
-fn tool_limit_panel(ui: &mut egui::Ui, app: &mut AppState, t: &Tokens, name: &str) {
+fn tool_limit_panel(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    t: &Tokens,
+    s: &Session,
+    name: &str,
+    running: bool,
+) {
     use super::tool_limits;
     let top = ui.cursor().min.y;
-    egui::Frame::new()
+    let panel = egui::Frame::new()
         .fill(t.surface2)
         .corner_radius(6.0)
         .inner_margin(egui::Margin::symmetric(10, 8))
@@ -1514,6 +1526,7 @@ fn tool_limit_panel(ui: &mut egui::Ui, app: &mut AppState, t: &Tokens, name: &st
                     });
                 });
             }
+            tool_option_rows(ui, app, out, t, s.id, &s.effective_tools, name, running);
             ui.add_space(2.0);
             ui.add(
                 egui::Label::new(
@@ -1535,6 +1548,9 @@ fn tool_limit_panel(ui: &mut egui::Ui, app: &mut AppState, t: &Tokens, name: &st
                 app.select(crate::app::View::Settings);
             }
         });
+    if std::mem::take(&mut app.chat_ui.limits_reveal) {
+        ui.scroll_to_rect(panel.response.rect, None);
+    }
     #[cfg(test)]
     {
         app.chat_ui.probe.tool_limit_popover = Some(egui::Rect::from_min_max(
@@ -1544,6 +1560,84 @@ fn tool_limit_panel(ui: &mut egui::Ui, app: &mut AppState, t: &Tokens, name: &st
     }
     let _ = top;
     ui.add_space(4.0);
+}
+
+/// One drag value per option the tool declares, for this session, from the
+/// option's `min` to the app-wide ceiling in Settings, with the value in
+/// force and a Reset when the session has its own. A change is sent when the
+/// control is let go of (not on every frame of a drag), and only if it
+/// differs from what is stored. All of it is disabled during a run.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn tool_option_rows(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    t: &Tokens,
+    id: roost_core::session::SessionId,
+    config: &EffectiveToolConfig,
+    name: &str,
+    running: bool,
+) {
+    let Some(tool) = roost_core::agent::tool::find(name) else {
+        return;
+    };
+    let effective = registry::effective_limits(&app.settings.tools, config);
+    for decl in tool.options() {
+        let key = format!("{name}.{}", decl.key);
+        let ceiling = (decl.get)(&app.settings.tools).max(decl.min);
+        let stored = (decl.get)(&effective).clamp(decl.min, ceiling);
+        let overridden = config.settings.contains_key(&key);
+        let pending = match &app.chat_ui.option_edit {
+            Some((sid, k, v)) if *sid == id && *k == key => Some(*v),
+            _ => None,
+        };
+        let mut value = pending.unwrap_or(stored);
+        ui.add_enabled_ui(!running, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(decl.label).size(12.0).color(t.fg2))
+                    .on_hover_text(decl.help);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let reset = overridden.then(|| ui.button("Reset"));
+                    #[cfg(test)]
+                    if let Some(r) = &reset {
+                        app.chat_ui.probe.tool_option_resets.push(r.rect);
+                    }
+                    if reset.is_some_and(|r| r.clicked()) {
+                        app.chat_ui.option_edit = None;
+                        out.push(BackendRequest::Chat(ChatCommand::SetToolOption {
+                            session: id,
+                            tool: name.into(),
+                            option: decl.key.into(),
+                            value: None,
+                        }));
+                    }
+                    let r = ui
+                        .add(
+                            egui::DragValue::new(&mut value)
+                                .range(decl.min..=ceiling)
+                                .speed(((ceiling - decl.min) / 200).max(1) as f64),
+                        )
+                        .on_hover_text(decl.help);
+                    #[cfg(test)]
+                    app.chat_ui.probe.tool_option_values.push(r.rect);
+                    if r.changed() {
+                        app.chat_ui.option_edit = Some((id, key.clone(), value));
+                    }
+                    if r.drag_stopped() || r.lost_focus() {
+                        app.chat_ui.option_edit = None;
+                        if value != stored {
+                            out.push(BackendRequest::Chat(ChatCommand::SetToolOption {
+                                session: id,
+                                tool: name.into(),
+                                option: decl.key.into(),
+                                value: Some(value),
+                            }));
+                        }
+                    }
+                });
+            });
+        });
+    }
 }
 
 /// The question after choosing Allow for Run. Cancel is the quiet default.
