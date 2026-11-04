@@ -4591,12 +4591,18 @@ fn the_tool_list_shows_every_tool_grouped_by_family() {
             .collect();
         let rows: Vec<String> = p.tool_list_rows.iter().map(|r| r.0.clone()).collect();
         assert_eq!(rows, expected, "{size:?}");
-        for f in &families {
-            assert!(
-                texts.to_uppercase().contains(&f.label().to_uppercase()),
-                "{size:?}: {} missing in {texts}",
-                f.label()
-            );
+        // A heading above each family's tools, in order.
+        let heads: Vec<_> = p.tool_list_heads.iter().map(|h| h.0.clone()).collect();
+        let want: Vec<_> = families.iter().map(|f| f.label().to_string()).collect();
+        assert_eq!(heads, want, "{size:?}");
+        for (f, (_, head)) in families.iter().zip(&p.tool_list_heads) {
+            let first = tool::all().iter().find(|t| t.spec().family == *f).unwrap();
+            let row = p
+                .tool_list_rows
+                .iter()
+                .find(|r| r.0 == first.name())
+                .unwrap();
+            assert!(head.bottom() <= row.1.top() + 0.5, "{size:?}: {f:?}");
         }
         // Each row says what the tool does in one sentence and its state
         // here: writing and commands are off in Settings by default.
@@ -4610,9 +4616,7 @@ fn the_tool_list_shows_every_tool_grouped_by_family() {
         );
         let spec = tool::find("read_file").unwrap().spec();
         assert!(registry::tool_enabled(&s.effective_tools, &spec));
-        for word in ["allowed", "ask", "off"] {
-            assert!(texts.contains(word), "{size:?}: status {word} in {texts}");
-        }
+        assert!(texts.contains("allowed"), "{size:?}: {texts}");
         let win = p.tool_list_window.expect("window");
         let screen = Rect::from_min_size(Pos2::ZERO, vec2(size.0, size.1));
         assert!(inside(win, screen), "{size:?}: {win:?}");

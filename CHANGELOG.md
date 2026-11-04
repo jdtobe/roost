@@ -83,6 +83,7 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 ### Agents can ask you questions
 
+- "All tools…" in the agent's tools menu opens a window that lists every tool by family: what it does, whether it is off, asks or is allowed in this chat, an on/off switch, its limits, and what the model is told about it.
 - A tool's limits in the agent's tools list can now be lowered for just that chat: open a tool's limits and drag or type a smaller value (never above the one in Settings), or press Reset to go back to the Settings value.
 - A new tool, `ask_user`, lets an agent stop and ask: pick one of 2 to 8 options, pick several, or type an answer. Pick questions also take an answer of your own, and you can skip. The question appears above the input, the run waits (also while you look at another chat), and your answer goes back to the model. The question and your answer stay in the chat.
 - It is on by default and can be switched off in the Individual tools list ("Ask you"). An agent may ask up to 5 questions per run. A question counts as an alert while the window is in the background ("Has a question for you").

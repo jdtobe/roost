@@ -1215,6 +1215,18 @@ pub(super) fn agent_settings(
                 .max_height(room)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
+                    // Every tool and its settings in one window; first, so it is
+                    // in reach however long the cards below are.
+                    let all = secondary(ui, "All tools…", true);
+                    #[cfg(test)]
+                    {
+                        app.chat_ui.probe.tool_list_button = Some(all.rect);
+                    }
+                    if all.clicked() {
+                        app.chat_ui.tool_list_open = true;
+                        // The window is the way on, and the popover would cover it.
+                        ui.close();
+                    }
                     settings_card(ui, t, "Folder", "the agent works here", |ui| {
                         let path = s
                             .workspace
@@ -1500,7 +1512,7 @@ fn tool_limit_chip(ui: &mut egui::Ui, app: &mut AppState, t: &Tokens, name: &str
     }
 }
 
-/// All of one tool's limits, under its row. They are changed in Settings.
+/// All of one tool's limits, under its row, for this chat. Settings holds the ceilings.
 fn tool_limit_panel(
     ui: &mut egui::Ui,
     app: &mut AppState,
@@ -1531,7 +1543,7 @@ fn tool_limit_panel(
             ui.add(
                 egui::Label::new(
                     RichText::new(
-                        "Smaller for a model with a small context window. The same for every agent.",
+                        "Smaller for a model with a small context window. Settings sets the ceiling; changes here apply to this chat only.",
                     )
                     .size(11.0)
                     .color(t.fg3),

@@ -162,6 +162,7 @@ pub struct ChatProbe {
     /// the drag value and Reset button of every option in it.
     pub tool_list_button: Option<egui::Rect>,
     pub tool_list_window: Option<egui::Rect>,
+    pub tool_list_heads: Vec<(String, egui::Rect)>,
     pub tool_list_rows: Vec<(String, egui::Rect)>,
     pub tool_list_toggles: Vec<(String, egui::Rect)>,
     pub tool_list_options: Vec<egui::Rect>,
@@ -3109,6 +3110,9 @@ fn composer(
             }
         });
     });
+    if agent && gate == super::chrome::ToolsGate::Ready {
+        super::tool_list::window(ui.ctx(), app, out, t, s);
+    }
     if stop {
         out.push(BackendRequest::Chat(ChatCommand::Stop(id)));
     }
