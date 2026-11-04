@@ -39,7 +39,24 @@ impl Tool for RunCommand {
     }
 
     fn options(&self) -> &'static [OptionDecl] {
-        &[]
+        &[
+            OptionDecl {
+                key: "timeout_secs",
+                label: "Time limit (seconds)",
+                help: "A command is stopped after this long.",
+                min: 1,
+                get: |l| l.run_timeout.as_secs(),
+                set: |l, v| l.run_timeout = std::time::Duration::from_secs(v),
+            },
+            OptionDecl {
+                key: "output_bytes",
+                label: "Output kept (bytes)",
+                help: "A command's output is cut here.",
+                min: 1,
+                get: |l| l.run_output_bytes as u64,
+                set: |l, v| l.run_output_bytes = v as usize,
+            },
+        ]
     }
 
     /// Asks with the command card. A call without a command (or a folder to

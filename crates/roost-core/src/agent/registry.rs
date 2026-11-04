@@ -315,9 +315,33 @@ fn run(
 }
 
 /// The limits a session's tools run with: its overrides under the app-wide
-/// ceilings in `base`.
-pub fn effective_limits(base: &Limits, _config: &EffectiveToolConfig) -> Limits {
-    base.clone()
+/// ceilings in `base`. An override that is not a non-negative whole number,
+/// or names no declared option, is ignored; one outside `min..=ceiling` is
+/// moved to the nearest end.
+pub fn effective_limits(base: &Limits, config: &EffectiveToolConfig) -> Limits {
+    let mut limits = base.clone();
+    let mut changed = false;
+    for (key, value) in &config.settings {
+        let Some(value) = value.as_u64() else {
+            continue;
+        };
+        let Some((tool, option)) = key.split_once('.') else {
+            continue;
+        };
+        let Some(decl) =
+            super::tool::find(tool).and_then(|t| t.options().iter().find(|o| o.key == option))
+        else {
+            continue;
+        };
+        let ceiling = (decl.get)(base);
+        (decl.set)(&mut limits, value.clamp(decl.min, ceiling.max(decl.min)));
+        changed = true;
+    }
+    if changed {
+        // A lowered maximum also lowers the default, as in `Limits::clamped`.
+        limits.read_default_lines = limits.read_default_lines.min(limits.read_max_lines);
+    }
+    limits
 }
 
 #[cfg(test)]

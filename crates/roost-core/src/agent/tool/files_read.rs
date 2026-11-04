@@ -42,7 +42,14 @@ impl Tool for ListDir {
     }
 
     fn options(&self) -> &'static [OptionDecl] {
-        &[]
+        &[OptionDecl {
+            key: "limit",
+            label: "Entries per listing",
+            help: "Most entries one listing shows.",
+            min: 1,
+            get: |l| l.list_entries as u64,
+            set: |l, v| l.list_entries = v as usize,
+        }]
     }
 
     fn plan(&self, _cx: &PlanCx, _args: &Value) -> Plan {
@@ -88,7 +95,24 @@ impl Tool for ReadFile {
     }
 
     fn options(&self) -> &'static [OptionDecl] {
-        &[]
+        &[
+            OptionDecl {
+                key: "default_lines",
+                label: "Lines when none are asked for",
+                help: "Lines shown when the model gives no limit.",
+                min: 1,
+                get: |l| l.read_default_lines as u64,
+                set: |l, v| l.read_default_lines = v as usize,
+            },
+            OptionDecl {
+                key: "max_lines",
+                label: "Most lines per read",
+                help: "Most lines one read shows.",
+                min: 1,
+                get: |l| l.read_max_lines as u64,
+                set: |l, v| l.read_max_lines = v as usize,
+            },
+        ]
     }
 
     fn plan(&self, _cx: &PlanCx, _args: &Value) -> Plan {
@@ -183,7 +207,14 @@ impl Tool for FindFiles {
     }
 
     fn options(&self) -> &'static [OptionDecl] {
-        &[]
+        &[OptionDecl {
+            key: "results",
+            label: "Paths per search",
+            help: "Most paths one search returns.",
+            min: 1,
+            get: |l| l.find_results as u64,
+            set: |l, v| l.find_results = v as usize,
+        }]
     }
 
     fn plan(&self, _cx: &PlanCx, _args: &Value) -> Plan {
@@ -231,7 +262,24 @@ impl Tool for SearchText {
     }
 
     fn options(&self) -> &'static [OptionDecl] {
-        &[]
+        &[
+            OptionDecl {
+                key: "max_matches",
+                label: "Matches per search",
+                help: "Most matches one search returns.",
+                min: 1,
+                get: |l| l.search_matches as u64,
+                set: |l, v| l.search_matches = v as usize,
+            },
+            OptionDecl {
+                key: "per_file_matches",
+                label: "Matches per file",
+                help: "Most matches shown from any one file.",
+                min: 1,
+                get: |l| l.per_file_matches as u64,
+                set: |l, v| l.per_file_matches = v as usize,
+            },
+        ]
     }
 
     fn plan(&self, _cx: &PlanCx, _args: &Value) -> Plan {

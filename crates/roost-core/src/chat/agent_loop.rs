@@ -585,17 +585,16 @@ impl Manager {
         self.start_tool_call(id, call, approved);
     }
 
-    /// The tool limits for this chat's model: the Settings ceilings, with the
-    /// size of one result cut to fit the model's context window.
+    /// The tool limits for this chat's model: the Settings ceilings, lowered
+    /// by the chat's own options, with the size of one result cut to fit the
+    /// model's context window.
     pub(super) fn limits_for(&self, id: SessionId) -> crate::agent::tools::Limits {
-        let window = self.sessions.get(&id).map(|live| {
-            let context = self.ctx_cache.get(&live.s.model).and_then(|i| i.context);
-            window(live.s.model_options.num_ctx, context)
-        });
-        match window {
-            Some(w) => self.limits.for_window(w),
-            None => self.limits.clone(),
-        }
+        let Some(live) = self.sessions.get(&id) else {
+            return self.limits.clone();
+        };
+        let base = registry::effective_limits(&self.limits, &live.s.effective_tools);
+        let context = self.ctx_cache.get(&live.s.model).and_then(|i| i.context);
+        base.for_window(window(live.s.model_options.num_ctx, context))
     }
 
     /// Runs a tool call on the blocking pool. `approved` lets a tool set to
