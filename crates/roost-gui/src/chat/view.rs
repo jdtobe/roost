@@ -70,6 +70,8 @@ pub struct ChatUi {
     /// A tool option being dragged or typed: the session, `tool.option` and
     /// the value so far. It is sent when the control is let go of.
     pub option_edit: Option<(SessionId, String, u64)>,
+    /// The window listing every tool is open.
+    pub tool_list_open: bool,
     /// A session being renamed in the header, with the text so far.
     pub renaming: Option<(SessionId, String)>,
     pub confirm: Confirm,
@@ -155,6 +157,15 @@ pub struct ChatProbe {
     /// The drag value and the Reset button of each option in the open tool row.
     pub tool_option_values: Vec<egui::Rect>,
     pub tool_option_resets: Vec<egui::Rect>,
+    /// The "All tools…" button in the tools popover, and in the tool list
+    /// window: the window, each tool's row and on/off switch (by name), and
+    /// the drag value and Reset button of every option in it.
+    pub tool_list_button: Option<egui::Rect>,
+    pub tool_list_window: Option<egui::Rect>,
+    pub tool_list_rows: Vec<(String, egui::Rect)>,
+    pub tool_list_toggles: Vec<(String, egui::Rect)>,
+    pub tool_list_options: Vec<egui::Rect>,
+    pub tool_list_resets: Vec<egui::Rect>,
     /// The Confirm and Cancel buttons shown after choosing Allow for Run.
     pub run_confirm: Option<(egui::Rect, egui::Rect)>,
     /// Per change (by id): its row under the tool, its Undo and Show diff buttons.
