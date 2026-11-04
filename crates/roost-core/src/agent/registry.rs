@@ -580,6 +580,24 @@ mod tests {
     }
 
     #[test]
+    fn every_read_tool_is_listed_once_in_all() {
+        let found: Vec<&str> = super::super::tool::all()
+            .iter()
+            .map(|t| t.spec().name)
+            .collect();
+        let listed = names(&specs());
+        for expected in ["read_binary", "find_files", "search_text", "search_bytes"] {
+            assert!(found.contains(&expected), "{expected} is not in all()");
+            // Once in all(), so the fallback list in specs() must not hold it too.
+            assert_eq!(
+                listed.iter().filter(|n| **n == expected).count(),
+                1,
+                "{expected} is listed more than once"
+            );
+        }
+    }
+
+    #[test]
     fn the_registry_has_six_read_tools_two_write_tools_a_command_tool_a_web_tool_and_the_question_tool(
     ) {
         let all = specs();
