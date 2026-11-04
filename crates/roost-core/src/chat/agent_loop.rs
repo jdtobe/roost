@@ -81,30 +81,17 @@ impl AgentRun {
         }
     }
 
-    /// What a command call would run and where, if `name` is the command tool.
+    /// What a command call would run and where, if the tool plans one.
     pub(super) fn run_preview(
         &self,
         name: &str,
         arguments: &Value,
         lim: &Limits,
     ) -> Option<RunPreview> {
-        if let Some(plan) = self.plan(name, arguments, lim) {
-            return match plan {
-                Plan::Approve { run, .. } => run,
-                _ => None,
-            };
+        match self.plan(name, arguments, lim)? {
+            Plan::Approve { run, .. } => run,
+            _ => None,
         }
-        if name != "run_command" {
-            return None;
-        }
-        let command = arguments.get("command")?.as_str()?.trim().to_string();
-        Some(RunPreview {
-            prefix: command::allow_prefix(&command),
-            command,
-            folder: self.workspace.as_deref()?.root().to_path_buf(),
-            timeout_secs: lim.run_timeout.as_secs(),
-            output_kb: lim.run_output_bytes / 1024,
-        })
     }
 
     /// Whether a working directory is attached.
@@ -537,27 +524,26 @@ impl Manager {
                     scope: Scope::File(path),
                     ..
                 }) if live.allowed_files.contains(path) => ask = false,
+                // An allowed prefix covers a plain command that starts with
+                // it and nothing chained to it.
+                Some(Plan::Approve {
+                    scope: Scope::CommandPrefix(own),
+                    ..
+                }) if live
+                    .allowed_prefixes
+                    .iter()
+                    .any(|p| command::covered_by(own, p)) =>
+                {
+                    ask = false
+                }
                 _ => {}
             }
         }
         let (preview, run) = match plan {
             Some(Plan::Approve { preview, run, .. }) => (preview, run),
             Some(_) => (None, None),
-            None => (None, agent.run_preview(&call.name, &call.arguments, &lim)),
+            None => (None, None),
         };
-        if ask && call.name == "run_command" {
-            // An allowed prefix covers a plain command that starts with it and
-            // nothing chained to it; a call without a command runs to fail.
-            let covered = live.allowed_prefixes.iter().any(|p| {
-                call.arguments
-                    .get("command")
-                    .and_then(Value::as_str)
-                    .is_some_and(|c| command::covered_by(c, p))
-            });
-            if covered || run.is_none() {
-                ask = false;
-            }
-        }
         if ask && call.name == web::TOOL {
             // An allowed host is fetched without asking, and a call without a
             // usable address runs to fail so the model can read why.
@@ -718,21 +704,6 @@ impl Manager {
         match decision {
             ApprovalDecision::Allow => self.start_tool_call(id, call, true),
             ApprovalDecision::AllowForSession
-                if registry::capability_of(&call.name).as_deref() == Some("shell.run") =>
-            {
-                // Commands are never allowed wholesale: only a plain prefix
-                // such as `cargo test`, and not at all for risky programs.
-                if let Some(live) = self.sessions.get_mut(&id) {
-                    let prefix = call
-                        .arguments
-                        .get("command")
-                        .and_then(Value::as_str)
-                        .and_then(command::allow_prefix);
-                    live.allowed_prefixes.extend(prefix);
-                }
-                self.start_tool_call(id, call, true);
-            }
-            ApprovalDecision::AllowForSession
                 if registry::capability_of(&call.name).as_deref() == Some("web.fetch") =>
             {
                 // The web never becomes automatic: only this host is allowed,
@@ -761,6 +732,16 @@ impl Manager {
                             live.allowed_files.insert(path);
                         }
                     }
+                    // Commands are never allowed wholesale: only a plain prefix
+                    // such as `cargo test`.
+                    Some(Plan::Approve {
+                        scope: Scope::CommandPrefix(prefix),
+                        ..
+                    }) => {
+                        if let Some(live) = self.sessions.get_mut(&id) {
+                            live.allowed_prefixes.insert(prefix);
+                        }
+                    }
                     Some(Plan::Approve {
                         scope: Scope::Capability,
                         ..
@@ -774,7 +755,12 @@ impl Manager {
                             self.save(&s);
                         }
                     }
-                    // Nothing to remember (a write that no longer plans):
+                    // A command no prefix can cover (risky programs, chained
+                    // commands): only this call is allowed.
+                    Some(Plan::Approve {
+                        scope: Scope::Once, ..
+                    }) => {}
+                    // Nothing to remember (a call that no longer plans):
                     // only this call is allowed.
                     _ => {}
                 }

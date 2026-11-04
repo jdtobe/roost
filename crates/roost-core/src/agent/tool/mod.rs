@@ -11,6 +11,7 @@ use serde_json::Value;
 
 mod files_read;
 mod files_write;
+mod shell;
 
 /// What the chat loop should do with a call before it runs. The tool's
 /// permission still decides: under Auto an `Approve` runs without asking,
@@ -43,7 +44,11 @@ pub enum Scope {
     Capability,
     /// One workspace-relative file, as the approval card shows it.
     File(String),
+    /// Plain commands that start with this prefix, such as `cargo test`.
     CommandPrefix(String),
+    /// Nothing is remembered: allowing covers only this call (a command no
+    /// prefix can safely cover).
+    Once,
     Host(String),
 }
 
@@ -102,6 +107,7 @@ pub fn all() -> &'static [&'static dyn Tool] {
         &files_read::SearchBytes,
         &files_write::WriteFile,
         &files_write::EditFile,
+        &shell::RunCommand,
     ]
 }
 

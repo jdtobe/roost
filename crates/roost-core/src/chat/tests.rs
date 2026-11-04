@@ -3099,6 +3099,23 @@ async fn a_command_that_cannot_be_covered_offers_no_allowance_and_asks_every_tim
     h.wait_run_ended(1).await;
 }
 
+#[tokio::test]
+async fn a_command_with_no_command_argument_runs_to_fail_without_asking() {
+    let (_srv, h, id, _ws) = commanding_agent(vec![
+        chat_route(calls("run_command", serde_json::json!({}))),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.send(id, "run nothing").await;
+    h.wait_run_ended(1).await;
+    assert_eq!(count_approvals(&h.events()), 0, "nothing to approve");
+    let out = tool_outputs(&h.events());
+    assert!(
+        out.iter().any(|o| o.contains("command is required")),
+        "the model reads why it failed: {out:?}"
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn stopping_the_agent_ends_a_running_command() {

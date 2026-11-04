@@ -134,27 +134,9 @@ pub fn default_permission(_family: Family, capability: Capability) -> Permission
 
 /// The built-in tools.
 pub fn specs() -> Vec<ToolSpec> {
-    let run = |name, description, parameters| ToolSpec {
-        name,
-        family: Family::Shell,
-        capability: Capability::Run,
-        description,
-        parameters,
-    };
     let mut specs: Vec<ToolSpec> = super::tool::all().iter().map(|t| t.spec()).collect();
     // Not yet defined through the `Tool` trait.
     specs.extend([
-        run(
-            "run_command",
-            "Run a shell command on the user's computer, starting in the workspace folder, and return its exit code and output. It runs as the user and is not limited to the workspace. It stops after 2 minutes and only the first 20 KB of output is kept. The user is asked before it runs. Prefer the file tools for reading and changing files.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "The command line, as typed in a terminal."}
-                },
-                "required": ["command"]
-            }),
-        ),
         ToolSpec {
             name: super::ask::TOOL,
             family: Family::Ask,
@@ -325,7 +307,7 @@ fn run(
     limits: &Limits,
     opts: &Options,
 ) -> (Result<String, ToolError>, Option<change::Change>) {
-    let (approved, cancel) = (opts.approved, opts.cancel);
+    let approved = opts.approved;
     let spec = match specs().into_iter().find(|s| s.name == name) {
         Some(s) => s,
         None => return (Err(ToolError::UnknownTool(name.to_string())), None),
@@ -355,7 +337,6 @@ fn run(
         return tool.run(&cx, args);
     }
     match name {
-        "run_command" => (run_command(ws, args, limits, cancel), None),
         // Fetched by the chat manager, which can wait for the network.
         super::web::TOOL => (
             Err(ToolError::InvalidArguments(
@@ -372,21 +353,6 @@ fn run(
         ),
         other => (Err(ToolError::UnknownTool(other.to_string())), None),
     }
-}
-
-/// Runs `command` from the arguments in the workspace folder.
-fn run_command(
-    ws: &Workspace,
-    args: &Value,
-    limits: &Limits,
-    cancel: &AtomicBool,
-) -> Result<String, ToolError> {
-    let Some(Value::String(command)) = args.get("command") else {
-        return Err(ToolError::InvalidArguments(
-            "command is required and must be a string".into(),
-        ));
-    };
-    super::command::run(ws.root(), command, limits, cancel)
 }
 
 #[cfg(test)]
