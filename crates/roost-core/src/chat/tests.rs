@@ -1694,6 +1694,60 @@ async fn setting_a_tool_option_saves_it_and_emits_agent_settings() {
     .await;
 }
 
+/// Runs a command that prints 6000 bytes in an agent whose `run_command`
+/// output option is `option`, and returns what the tool reported.
+async fn command_output_with(option: Option<u64>) -> String {
+    let (_srv, h, id, _ws) = commanding_agent(vec![
+        chat_route(calls(
+            "run_command",
+            serde_json::json!({"command": "head -c 6000 /dev/zero | tr '\\0' x"}),
+        )),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.cmd(ChatCommand::SetToolOption {
+        session: id,
+        tool: "run_command".into(),
+        option: "output_bytes".into(),
+        value: option,
+    });
+    h.send(id, "go").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Allow,
+    });
+    h.wait_run_ended(1).await;
+    tool_outputs(&h.events()).join("\n")
+}
+
+fn longest_run_of_x(text: &str) -> usize {
+    text.split(|c| c != 'x').map(str::len).max().unwrap_or(0)
+}
+
+#[tokio::test]
+async fn a_session_option_lowers_what_a_tool_call_gets() {
+    let out = command_output_with(Some(1500)).await;
+    assert_eq!(longest_run_of_x(&out), 1500, "{out}");
+    // Cleared, the Settings value (cut to the window) applies again.
+    let out = command_output_with(None).await;
+    assert!(longest_run_of_x(&out) > 1500);
+}
+
+#[tokio::test]
+async fn the_model_window_still_cuts_after_a_session_option_raises_nothing_above_it() {
+    // The Settings ceiling (20 KB) allows 5000, but this chat's window only
+    // has room for less: the option is applied first, then the window cut.
+    let out = command_output_with(Some(5000)).await;
+    let window_share = crate::agent::tools::Limits::default()
+        .for_window(crate::chat::context::window(None, None))
+        .run_output_bytes;
+    assert!(window_share < 5000, "the test needs a window below 5000");
+    assert_eq!(longest_run_of_x(&out), window_share, "{out}");
+}
+
 #[tokio::test]
 async fn a_call_already_running_keeps_the_limits_it_started_with() {
     let (_srv, h, id, _ws) = commanding_agent(vec![
@@ -1704,6 +1758,13 @@ async fn a_call_already_running_keeps_the_limits_it_started_with() {
         chat_route(reply("Done.")),
     ])
     .await;
+    let set = |value| ChatCommand::SetToolOption {
+        session: id,
+        tool: "run_command".into(),
+        option: "output_bytes".into(),
+        value,
+    };
+    h.cmd(set(Some(1024)));
     h.send(id, "go").await;
     h.wait("asked", |e| approval_for(e).is_some()).await;
     let (call_id, _) = approval_for(&h.events()).unwrap();
@@ -1712,23 +1773,13 @@ async fn a_call_already_running_keeps_the_limits_it_started_with() {
         call_id,
         decision: ApprovalDecision::Allow,
     });
-    // The command has started; a tighter limit now applies from the next call.
-    h.cmd(ChatCommand::SetToolOption {
-        session: id,
-        tool: "run_command".into(),
-        option: "output_bytes".into(),
-        value: Some(1),
-    });
+    // The command has started with the 1 KB option; clearing it now applies
+    // from the next call, not to this one.
+    h.cmd(set(None));
     h.wait_run_ended(1).await;
-    assert_eq!(
-        h.read(id)
-            .effective_tools
-            .settings
-            .get("run_command.output_bytes"),
-        Some(&serde_json::json!(1))
-    );
+    assert!(h.read(id).effective_tools.settings.is_empty());
     let out = tool_outputs(&h.events()).join("\n");
-    assert!(out.contains(&"x".repeat(3000)), "{out}");
+    assert_eq!(longest_run_of_x(&out), 1024, "{out}");
 }
 
 #[tokio::test]

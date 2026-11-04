@@ -52,7 +52,7 @@ impl Tool for RunCommand {
                 key: "output_bytes",
                 label: "Output kept (bytes)",
                 help: "A command's output is cut here.",
-                min: 1,
+                min: 1024,
                 get: |l| l.run_output_bytes as u64,
                 set: |l, v| l.run_output_bytes = v as usize,
             },

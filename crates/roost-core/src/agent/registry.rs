@@ -755,6 +755,47 @@ mod tests {
     }
 
     #[test]
+    fn a_lowered_maximum_also_lowers_the_default_lines() {
+        let base = Limits::default();
+        let l = effective_limits(&base, &with("read_file.max_lines", json!(50)));
+        assert_eq!(l.read_max_lines, 50);
+        assert_eq!(l.read_default_lines, 50);
+        assert!(base.read_default_lines > 50);
+    }
+
+    #[test]
+    fn the_command_output_cannot_go_below_the_floor_settings_keeps() {
+        let base = Limits::default();
+        let l = effective_limits(&base, &with("run_command.output_bytes", json!(1)));
+        assert_eq!(l.run_output_bytes, 1024);
+    }
+
+    #[test]
+    fn every_option_changes_its_own_limit_and_nothing_else() {
+        let base = Limits::default();
+        let decls: Vec<(String, &crate::agent::tool::OptionDecl)> = crate::agent::tool::all()
+            .iter()
+            .flat_map(|t| {
+                t.options()
+                    .iter()
+                    .map(move |o| (format!("{}.{}", t.name(), o.key), o))
+            })
+            .collect();
+        assert_eq!(decls.len(), 8);
+        for (key, decl) in &decls {
+            let l = effective_limits(&base, &with(key, json!(decl.min)));
+            assert_eq!((decl.get)(&l), decl.min, "{key}");
+            for (other, o) in &decls {
+                // Lowering the most lines also lowers the default.
+                let follows = key == "read_file.max_lines" && other == "read_file.default_lines";
+                if other != key && !follows {
+                    assert_eq!((o.get)(&l), (o.get)(&base), "{key} changed {other}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn the_command_timeout_option_is_in_seconds() {
         let base = Limits::default();
         let l = effective_limits(&base, &with("run_command.timeout_secs", json!(5)));
