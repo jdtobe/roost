@@ -13,6 +13,7 @@ use crate::agent::ask;
 use crate::agent::change::{self, ChangePreview};
 use crate::agent::command::{self, RunPreview};
 use crate::agent::registry;
+use crate::agent::tool::{self, Plan, PlanCx, Scope};
 use crate::agent::tools::Limits;
 use crate::agent::web;
 use crate::agent::{ToolError, Workspace};
@@ -56,6 +57,16 @@ pub(super) struct AgentRun {
 }
 
 impl AgentRun {
+    /// What the tool called `name` says must happen before the call runs;
+    /// `None` for a tool not yet defined through the `Tool` trait.
+    pub(super) fn plan(&self, name: &str, arguments: &Value, lim: &Limits) -> Option<Plan> {
+        let cx = PlanCx {
+            workspace: self.workspace.as_deref(),
+            limits: lim,
+        };
+        Some(tool::find(name)?.plan(&cx, arguments))
+    }
+
     /// What a write call would change, if `name` is a write tool and the call
     /// makes sense.
     pub(super) fn preview(
@@ -64,10 +75,10 @@ impl AgentRun {
         arguments: &Value,
         lim: &Limits,
     ) -> Option<ChangePreview> {
-        change::plan(self.workspace.as_deref()?, name, arguments, lim)
-            .ok()
-            .flatten()
-            .map(|c| c.card())
+        match self.plan(name, arguments, lim)? {
+            Plan::Approve { preview, .. } => preview,
+            _ => None,
+        }
     }
 
     /// What a command call would run and where, if `name` is the command tool.
@@ -77,6 +88,12 @@ impl AgentRun {
         arguments: &Value,
         lim: &Limits,
     ) -> Option<RunPreview> {
+        if let Some(plan) = self.plan(name, arguments, lim) {
+            return match plan {
+                Plan::Approve { run, .. } => run,
+                _ => None,
+            };
+        }
         if name != "run_command" {
             return None;
         }
@@ -509,18 +526,25 @@ impl Manager {
         }
         let config = gated(&live.s.effective_tools, writes, runs);
         let mut ask = registry::needs_approval(&config, &call.name);
-        let preview = agent.preview(&call.name, &call.arguments, &lim);
-        if ask && registry::capability_of(&call.name).as_deref() == Some("files.write") {
-            match &preview {
-                // The user allowed edits to this file for the session.
-                Some(p) if live.allowed_files.contains(&p.path) => ask = false,
+        let plan = agent.plan(&call.name, &call.arguments, &lim);
+        if ask {
+            match &plan {
                 // A call that cannot be planned changes nothing; running it
                 // lets the model read why.
-                None => ask = false,
-                Some(_) => {}
+                Some(Plan::Run) => ask = false,
+                // The user allowed edits to this file for the session.
+                Some(Plan::Approve {
+                    scope: Scope::File(path),
+                    ..
+                }) if live.allowed_files.contains(path) => ask = false,
+                _ => {}
             }
         }
-        let run = agent.run_preview(&call.name, &call.arguments, &lim);
+        let (preview, run) = match plan {
+            Some(Plan::Approve { preview, run, .. }) => (preview, run),
+            Some(_) => (None, None),
+            None => (None, agent.run_preview(&call.name, &call.arguments, &lim)),
+        };
         if ask && call.name == "run_command" {
             // An allowed prefix covers a plain command that starts with it and
             // nothing chained to it; a call without a command runs to fail.
@@ -720,29 +744,39 @@ impl Manager {
                 }
                 self.start_tool_call(id, call, true);
             }
-            ApprovalDecision::AllowForSession
-                if registry::capability_of(&call.name).as_deref() == Some("files.write") =>
-            {
-                // Writing never becomes automatic: only this file is allowed.
-                let lim = self.limits_for(id);
-                if let Some(live) = self.sessions.get_mut(&id) {
-                    let path = live
-                        .agent
-                        .as_ref()
-                        .and_then(|a| a.preview(&call.name, &call.arguments, &lim))
-                        .map(|p| p.path);
-                    live.allowed_files.extend(path);
-                }
-                self.start_tool_call(id, call, true);
-            }
             ApprovalDecision::AllowForSession => {
-                if let (Some(key), Some(live)) = (
-                    registry::capability_of(&call.name),
-                    self.sessions.get_mut(&id),
-                ) {
-                    live.s.set_capability(&key, Permission::Auto);
-                    let s = live.s.clone();
-                    self.save(&s);
+                let lim = self.limits_for(id);
+                let plan = self
+                    .sessions
+                    .get(&id)
+                    .and_then(|l| l.agent.as_ref())
+                    .and_then(|a| a.plan(&call.name, &call.arguments, &lim));
+                match plan {
+                    // Writing never becomes automatic: only this file is allowed.
+                    Some(Plan::Approve {
+                        scope: Scope::File(path),
+                        ..
+                    }) => {
+                        if let Some(live) = self.sessions.get_mut(&id) {
+                            live.allowed_files.insert(path);
+                        }
+                    }
+                    Some(Plan::Approve {
+                        scope: Scope::Capability,
+                        ..
+                    }) => {
+                        if let (Some(key), Some(live)) = (
+                            registry::capability_of(&call.name),
+                            self.sessions.get_mut(&id),
+                        ) {
+                            live.s.set_capability(&key, Permission::Auto);
+                            let s = live.s.clone();
+                            self.save(&s);
+                        }
+                    }
+                    // Nothing to remember (a write that no longer plans):
+                    // only this call is allowed.
+                    _ => {}
                 }
                 self.start_tool_call(id, call, true);
             }

@@ -134,13 +134,6 @@ pub fn default_permission(_family: Family, capability: Capability) -> Permission
 
 /// The built-in tools.
 pub fn specs() -> Vec<ToolSpec> {
-    let write = |name, description, parameters| ToolSpec {
-        name,
-        family: Family::Files,
-        capability: Capability::Write,
-        description,
-        parameters,
-    };
     let run = |name, description, parameters| ToolSpec {
         name,
         family: Family::Shell,
@@ -151,31 +144,6 @@ pub fn specs() -> Vec<ToolSpec> {
     let mut specs: Vec<ToolSpec> = super::tool::all().iter().map(|t| t.spec()).collect();
     // Not yet defined through the `Tool` trait.
     specs.extend([
-        write(
-            "write_file",
-            "Create a file, or replace a whole file, in the workspace with the given text. Folders are made as needed. Prefer edit_file for a small change to an existing file. The user may be asked to approve the change.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "File relative to the workspace root."},
-                    "content": {"type": "string", "description": "The complete new text of the file."}
-                },
-                "required": ["path", "content"]
-            }),
-        ),
-        write(
-            "edit_file",
-            "Change part of an existing file: replace old_text, which must appear exactly once, with new_text. Read the file first and copy old_text exactly, with enough surrounding lines to be unique. The user may be asked to approve the change.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "File relative to the workspace root."},
-                    "old_text": {"type": "string", "description": "The exact text to replace; it must occur once."},
-                    "new_text": {"type": "string", "description": "What to put there instead (may be empty to delete)."}
-                },
-                "required": ["path", "old_text", "new_text"]
-            }),
-        ),
         run(
             "run_command",
             "Run a shell command on the user's computer, starting in the workspace folder, and return its exit code and output. It runs as the user and is not limited to the workspace. It stops after 2 minutes and only the first 20 KB of output is kept. The user is asked before it runs. Prefer the file tools for reading and changing files.",
@@ -357,7 +325,7 @@ fn run(
     limits: &Limits,
     opts: &Options,
 ) -> (Result<String, ToolError>, Option<change::Change>) {
-    let (approved, undo_room, cancel) = (opts.approved, opts.undo_room, opts.cancel);
+    let (approved, cancel) = (opts.approved, opts.cancel);
     let spec = match specs().into_iter().find(|s| s.name == name) {
         Some(s) => s,
         None => return (Err(ToolError::UnknownTool(name.to_string())), None),
@@ -378,7 +346,7 @@ fn run(
             None,
         );
     }
-    if let Some(tool) = super::tool::all().iter().find(|t| t.name() == name) {
+    if let Some(tool) = super::tool::find(name) {
         let cx = super::tool::RunCx {
             workspace: ws,
             limits,
@@ -387,7 +355,6 @@ fn run(
         return tool.run(&cx, args);
     }
     match name {
-        "write_file" | "edit_file" => write(ws, name, args, undo_room, limits),
         "run_command" => (run_command(ws, args, limits, cancel), None),
         // Fetched by the chat manager, which can wait for the network.
         super::web::TOOL => (
@@ -420,37 +387,6 @@ fn run_command(
         ));
     };
     super::command::run(ws.root(), command, limits, cancel)
-}
-
-/// Plans a write, checks the original can be kept, then applies it.
-fn write(
-    ws: &Workspace,
-    name: &str,
-    args: &Value,
-    undo_room: usize,
-    limits: &Limits,
-) -> (Result<String, ToolError>, Option<change::Change>) {
-    let change = match change::plan(ws, name, args, limits) {
-        Ok(Some(c)) => c,
-        Ok(None) => return (Err(ToolError::UnknownTool(name.to_string())), None),
-        Err(e) => return (Err(e), None),
-    };
-    let needed = change.before.as_ref().map_or(0, String::len);
-    if needed > undo_room {
-        return (
-            Err(ToolError::InvalidArguments(
-                "this session cannot keep another copy for undo; nothing was changed. Ask the user to undo or start a new session".into(),
-            )),
-            None,
-        );
-    }
-    match change::apply(ws, &change) {
-        Ok(msg) => {
-            let kept = (change.before.as_deref() != Some(change.after.as_str())).then_some(change);
-            (Ok(msg), kept)
-        }
-        Err(e) => (Err(e), None),
-    }
 }
 
 #[cfg(test)]

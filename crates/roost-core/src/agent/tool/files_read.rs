@@ -42,7 +42,7 @@ impl Tool for ListDir {
     }
 
     fn plan(&self, _cx: &PlanCx, _args: &Value) -> Plan {
-        Plan::Run
+        super::by_capability()
     }
 
     fn run(&self, cx: &RunCx, args: &Value) -> (Result<String, ToolError>, Option<change::Change>) {
@@ -84,7 +84,7 @@ impl Tool for ReadFile {
     }
 
     fn plan(&self, _cx: &PlanCx, _args: &Value) -> Plan {
-        Plan::Run
+        super::by_capability()
     }
 
     fn run(&self, cx: &RunCx, args: &Value) -> (Result<String, ToolError>, Option<change::Change>) {
@@ -126,7 +126,7 @@ impl Tool for ReadBinary {
     }
 
     fn plan(&self, _cx: &PlanCx, _args: &Value) -> Plan {
-        Plan::Run
+        super::by_capability()
     }
 
     fn run(&self, cx: &RunCx, args: &Value) -> (Result<String, ToolError>, Option<change::Change>) {
@@ -171,7 +171,7 @@ impl Tool for FindFiles {
     }
 
     fn plan(&self, _cx: &PlanCx, _args: &Value) -> Plan {
-        Plan::Run
+        super::by_capability()
     }
 
     fn run(&self, cx: &RunCx, args: &Value) -> (Result<String, ToolError>, Option<change::Change>) {
@@ -215,7 +215,7 @@ impl Tool for SearchText {
     }
 
     fn plan(&self, _cx: &PlanCx, _args: &Value) -> Plan {
-        Plan::Run
+        super::by_capability()
     }
 
     fn run(&self, cx: &RunCx, args: &Value) -> (Result<String, ToolError>, Option<change::Change>) {
@@ -259,7 +259,7 @@ impl Tool for SearchBytes {
     }
 
     fn plan(&self, _cx: &PlanCx, _args: &Value) -> Plan {
-        Plan::Run
+        super::by_capability()
     }
 
     fn run(&self, cx: &RunCx, args: &Value) -> (Result<String, ToolError>, Option<change::Change>) {

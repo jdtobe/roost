@@ -2,23 +2,31 @@
 //! runs. The registry decides which tools may run; a tool decides nothing
 //! about permission.
 
-use super::change;
+use super::change::{self, ChangePreview};
+use super::command::RunPreview;
 use super::registry::{Options, ToolSpec};
 use super::tools::Limits;
 use super::workspace::{ToolError, Workspace};
 use serde_json::Value;
 
 mod files_read;
+mod files_write;
 
-/// What the chat loop should do with a call before it runs.
+/// What the chat loop should do with a call before it runs. The tool's
+/// permission still decides: under Auto an `Approve` runs without asking,
+/// and under Off nothing runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Plan {
-    /// Run it now: it changes nothing and needs no say from the user.
+    /// Run it without asking, even under Ask: a call that cannot be planned
+    /// changes nothing, and running it lets the model read why.
     Run,
-    /// Show the user what it will do and wait for a yes.
+    /// Under Ask, show the user what it will do and wait for a yes, unless
+    /// `scope` was already allowed for this chat.
     Approve {
         scope: Scope,
-        preview: Option<Preview>,
+        /// What a write will change, shown on the approval card.
+        preview: Option<ChangePreview>,
+        /// The command a run will start, shown on the approval card.
         run: Option<RunPreview>,
     },
     /// Put a question to the user and take the answer as the result.
@@ -30,20 +38,24 @@ pub enum Plan {
 /// What "Allow for this chat" remembers, and what an earlier allowance covers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
-    /// Everything the tool's capability covers.
+    /// Everything the tool's capability covers: allowing it sets the
+    /// capability to Auto.
     Capability,
+    /// One workspace-relative file, as the approval card shows it.
     File(String),
     CommandPrefix(String),
     Host(String),
 }
 
-/// What a write will change, shown on the approval card. Not used yet.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Preview(pub String);
-
-/// The command a run will start, shown on the approval card. Not used yet.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunPreview(pub String);
+/// The plan of a tool with nothing to show: under Ask it asks, and "Allow
+/// for this chat" allows its whole capability.
+pub fn by_capability() -> Plan {
+    Plan::Approve {
+        scope: Scope::Capability,
+        preview: None,
+        run: None,
+    }
+}
 
 /// A limit the user can lower for a session, declared by the tool that
 /// reads it. The ceiling is `get` on the app-wide limits.
@@ -88,5 +100,12 @@ pub fn all() -> &'static [&'static dyn Tool] {
         &files_read::FindFiles,
         &files_read::SearchText,
         &files_read::SearchBytes,
+        &files_write::WriteFile,
+        &files_write::EditFile,
     ]
+}
+
+/// The tool called `name`, if it is defined through the trait.
+pub fn find(name: &str) -> Option<&'static dyn Tool> {
+    all().iter().copied().find(|t| t.name() == name)
 }
