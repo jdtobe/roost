@@ -18,7 +18,7 @@ egui_extras = "0.37"
 roost-core = { version = "0.1.0", path = "../roost-core" }
 png = "0.18"
 pulldown-cmark = { version = "0.13.5", default-features = false }
-rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+rfd = { version = "0.18.0", default-features = false, features = ["xdg-portal"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync", "time"] }
